@@ -1,0 +1,117 @@
+name: Publish Docker Image On Main Push
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: main-merge-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege at the top level; the publish job opts into packages:write.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Tests (${{ matrix.dialect }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dialect: sqlite
+            database_url: sqlite+aiosqlite:///./.drukbox-test.db
+          - dialect: postgres
+            database_url: postgresql+psycopg://postgres:postgres@127.0.0.1:55432/drukbox_test
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: drukbox_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d drukbox_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Load test environment
+        run: cat env/test.env >> "$GITHUB_ENV"
+
+      - name: Select test database for matrix dialect
+        run: echo "TEST_DATABASE_URL=${{ matrix.database_url }}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          version: "0.10.9"
+
+      - name: Sync dependencies
+        run: uv sync --locked --dev --all-extras
+
+      - name: Run test suite
+        run: uv run pytest -v
+
+  publish-image:
+    name: Build And Publish Docker Image
+    runs-on: ubuntu-latest
+    needs:
+      - test
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

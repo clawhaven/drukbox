@@ -1,0 +1,117 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/api",
+    "src/core",
+    "src/diagnostics",
+    "src/hosts",
+    "src/http_proxies",
+    "src/networking",
+    "src/providers",
+]
+exclude = ["**/tests", "**/tests/**"]
+
+[project]
+name = "drukbox"
+version = "0.0.1"
+description = "FastAPI service that provisions sandbox hosts."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "Paulo Alvarado Garcia" },
+]
+keywords = [
+    "sandbox",
+    "vm",
+    "provisioning",
+    "fastapi",
+    "tailscale",
+]
+classifiers = [
+    "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Framework :: Pydantic :: 2",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "aiosqlite>=0.20",
+    "alembic>=1.14",
+    "cryptography>=43",
+    "fastapi>=0.115",
+    "greenlet>=3.0",
+    "httpx>=0.28",
+    "pydantic-settings>=2.8",
+    "psycopg[binary]>=3.2",
+    "sqlalchemy[asyncio]>=2.0",
+    "uuid6>=2024.7.10",
+    "uvicorn[standard]>=0.34",
+]
+
+[project.optional-dependencies]
+aws = [
+    "aioboto3>=13",
+]
+
+[project.urls]
+Homepage = "https://github.com/clawhaven/drukbox"
+Repository = "https://github.com/clawhaven/drukbox"
+Issues = "https://github.com/clawhaven/drukbox/issues"
+
+[dependency-groups]
+dev = [
+    # aioboto3 is the optional `aws` extra, but the AWS tests import it at
+    # collection time. Keep it in the dev group so a bare `uv sync` runs the
+    # full suite and pyright without needing --all-extras.
+    "aioboto3>=13",
+    "pyright>=1.1",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "respx>=0.23.1",
+    "ruff>=0.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+extend-exclude = ["alembic/versions/*.py"]
+
+[tool.ruff.format]
+line-ending = "lf"
+quote-style = "double"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["src"]
+
+[tool.pyright]
+include = ["src"]
+exclude = [
+    "**/__pycache__",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false

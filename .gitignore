@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+
+# Environment files
+.env
+.env.*
+
+# Test / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Type checking
+.pyright/
+.mypy_cache/
+
+# Linting / formatting
+.ruff_cache/
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude / agent state
+.claude/
+
+# Local databases
+db.sqlite3
+*.db
+*.db-journal
+
+# Subproject artifacts
+api-tests/node_modules/
+api-tests/playwright-report/
+api-tests/test-results/

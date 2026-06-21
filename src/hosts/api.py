@@ -1,0 +1,102 @@
+import logging
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from sqlalchemy.exc import SQLAlchemyError
+
+from hosts.auth import require_service_auth
+from hosts.deps import get_host_service
+from hosts.exceptions import HostTeardownError
+from hosts.models import Host
+from hosts.schemas import HostCreate, HostOut
+from hosts.service import HostService
+from networking.tailscale import NetworkError
+from providers.exceptions import ProviderError, UnknownProviderError
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/hosts", tags=["hosts"])
+
+HostServiceDep = Annotated[HostService, Depends(get_host_service)]
+
+
+@router.post(
+    "",
+    response_model=HostOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_service_auth)],
+)
+async def create_host(
+    service: HostServiceDep,
+    payload: HostCreate | None = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=255,
+            pattern=r"^[A-Za-z0-9_\-:.]+$",
+            description=(
+                "Caller-supplied retry key. Same key within "
+                "IDEMPOTENCY_KEY_TTL_HOURS returns the same host. Charset: "
+                "A-Z a-z 0-9 _ - : . (length 1-255)."
+            ),
+        ),
+    ] = None,
+) -> Host:
+    host_create = payload or HostCreate()
+
+    try:
+        return await service.get_or_create_host(
+            env=host_create.env,
+            image=host_create.image,
+            expires_at=host_create.expires_at,
+            idempotency_key=idempotency_key,
+            provider=host_create.provider,
+        )
+    except UnknownProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        log.exception("unexpected database error during host provisioning")
+        raise HTTPException(
+            status_code=503,
+            detail="host provisioning could not be completed",
+        ) from exc
+
+
+@router.get(
+    "",
+    response_model=list[HostOut],
+    dependencies=[Depends(require_service_auth)],
+)
+async def list_hosts(service: HostServiceDep) -> list[Host]:
+    return await service.list_hosts()
+
+
+@router.get(
+    "/{host_id}",
+    response_model=HostOut,
+    dependencies=[Depends(require_service_auth)],
+)
+async def get_host(host_id: uuid.UUID, service: HostServiceDep) -> Host:
+    if host := await service.get_host(host_id):
+        return host
+    raise HTTPException(status_code=404, detail="host not found")
+
+
+@router.delete(
+    "/{host_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_service_auth)],
+)
+async def delete_host(host_id: uuid.UUID, service: HostServiceDep) -> Response:
+    try:
+        await service.delete_host(host_id)
+    except (ProviderError, NetworkError) as exc:
+        log.exception("unexpected error deleting sandbox host")
+        raise HostTeardownError("host teardown could not be completed") from exc
+    except SQLAlchemyError as exc:
+        log.exception("unexpected database error during host teardown")
+        raise HostTeardownError("host teardown could not be completed") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

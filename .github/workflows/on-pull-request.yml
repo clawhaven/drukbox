@@ -1,0 +1,199 @@
+name: Validate On Pull Request
+
+on:
+  pull_request:
+
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Run Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Load test environment
+        run: cat env/test.env >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          version: "0.10.9"
+
+      - name: Sync dependencies
+        run: uv sync --locked --dev --all-extras
+
+      - name: Run Ruff
+        run: |
+          uv run ruff check
+          uv run ruff format --check
+
+  static-checks:
+    name: Run Static Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Load test environment
+        run: cat env/test.env >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          version: "0.10.9"
+
+      - name: Sync dependencies
+        run: uv sync --locked --dev --all-extras
+
+      - name: Run Pyright
+        run: uv run pyright
+
+  test:
+    name: Run Tests (${{ matrix.dialect }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dialect: sqlite
+            database_url: sqlite+aiosqlite:///./.drukbox-test.db
+          - dialect: postgres
+            database_url: postgresql+psycopg://postgres:postgres@127.0.0.1:55432/drukbox_test
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: drukbox_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d drukbox_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Load test environment
+        run: cat env/test.env >> "$GITHUB_ENV"
+
+      - name: Select test database for matrix dialect
+        run: echo "TEST_DATABASE_URL=${{ matrix.database_url }}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          version: "0.10.9"
+
+      - name: Sync dependencies
+        run: uv sync --locked --dev --all-extras
+
+      - name: Run test suite
+        run: uv run pytest -v
+
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build container image
+        run: docker build -t drukbox:validate .
+
+  api-tests:
+    name: Run API Tests (docker provider)
+    runs-on: ubuntu-latest
+    # Black-box e2e against a real deployment. The docker provider provisions
+    # local containers on the runner, so this needs no cloud credentials.
+    env:
+      DATABASE_URL: sqlite+aiosqlite:///./drukbox.db
+      SERVICE_TOKENS: ci-token
+      DEFAULT_HOST_PROVIDER: docker
+      DOCKER_DEFAULT_IMAGE: drukbox/sandbox:ci
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build sandbox image
+        run: docker build -t drukbox/sandbox:ci images/local/
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          version: "0.10.9"
+
+      - name: Sync dependencies
+        run: uv sync --locked --no-dev --all-extras
+
+      - name: Apply migrations
+        run: PYTHONPATH=src uv run alembic upgrade head
+
+      - name: Start drukbox
+        run: |
+          PYTHONPATH=src nohup uv run uvicorn api.app:app \
+            --host 127.0.0.1 --port 8780 > /tmp/drukbox.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fsS http://localhost:8780/healthz >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "drukbox failed to start" >&2
+          cat /tmp/drukbox.log
+          exit 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install API test dependencies
+        run: npm --prefix api-tests ci
+
+      - name: Run API tests
+        run: npm --prefix api-tests test
+        env:
+          SERVICE_URL: http://localhost:8780
+          SERVICE_TOKEN: ci-token
+
+      - name: Dump drukbox log on failure
+        if: failure()
+        run: cat /tmp/drukbox.log || true

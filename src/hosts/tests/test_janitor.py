@@ -1,0 +1,121 @@
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
+
+from uuid6 import uuid7
+
+from core.database import async_session_factory
+from hosts.janitor import reap_expired_hosts
+from hosts.models import Host, HostStatus
+from hosts.service import utc_now
+from providers.exe.settings import ExeSettings
+
+
+async def _create_host(
+    *,
+    name: str,
+    status: str,
+    expires_at: datetime | None,
+    tailscale_device_id: str | None = None,
+) -> Host:
+    now = utc_now()
+    host = Host(
+        id=uuid7(),
+        name=name,
+        status=status,
+        provider="exe",
+        image=ExeSettings().default_image,  # pyright: ignore[reportCallIssue]
+        env={},
+        internal_ssh_host=f"{name}.example.ts.net",
+        external_ssh_host="",
+        external_ssh_port=22,
+        known_hosts="",
+        tailscale_device_id=tailscale_device_id,
+        created_at=now,
+        updated_at=now,
+        expires_at=expires_at,
+        last_error="",
+    )
+    async with async_session_factory() as session:
+        session.add(host)
+        await session.commit()
+        await session.refresh(host)
+    return host
+
+
+async def test_janitor_deletes_host_past_expires_at(monkeypatch):
+    monkeypatch.setattr("networking.tailscale.Tailscale.release_device", AsyncMock())
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", AsyncMock())
+    host = await _create_host(
+        name="lb-sandbox-expired",
+        status=HostStatus.ACTIVE.value,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        tailscale_device_id="n123CNTRL",
+    )
+
+    reaped = await reap_expired_hosts()
+
+    assert reaped == [host.id]
+
+    async with async_session_factory() as session:
+        assert await session.get(Host, host.id) is None
+
+
+async def test_janitor_leaves_unexpired_hosts_alone(monkeypatch):
+    mocked_delete_device = AsyncMock()
+    mocked_delete_vm = AsyncMock()
+    monkeypatch.setattr("networking.tailscale.Tailscale.release_device", mocked_delete_device)
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", mocked_delete_vm)
+    host = await _create_host(
+        name="lb-sandbox-fresh",
+        status=HostStatus.ACTIVE.value,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        tailscale_device_id="n123CNTRL",
+    )
+
+    reaped = await reap_expired_hosts()
+
+    assert reaped == []
+    mocked_delete_device.assert_not_awaited()
+    mocked_delete_vm.assert_not_awaited()
+
+    async with async_session_factory() as session:
+        assert await session.get(Host, host.id) is not None
+
+
+async def test_janitor_ignores_hosts_without_expires_at(monkeypatch):
+    monkeypatch.setattr("networking.tailscale.Tailscale.release_device", AsyncMock())
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", AsyncMock())
+    host = await _create_host(
+        name="lb-sandbox-no-ttl",
+        status=HostStatus.ACTIVE.value,
+        expires_at=None,
+        tailscale_device_id="n123CNTRL",
+    )
+
+    reaped = await reap_expired_hosts()
+
+    assert reaped == []
+
+    async with async_session_factory() as session:
+        assert await session.get(Host, host.id) is not None
+
+
+async def test_janitor_force_reaps_abandoned_early_state_host(monkeypatch):
+    # An expired safety TTL on an early-state row means provisioning was
+    # abandoned (a live provision's TTL is still in the future). The janitor
+    # force-reaps it and tears down any VM partial provisioning may have created.
+    monkeypatch.setattr("networking.tailscale.Tailscale.release_device", AsyncMock())
+    delete_vm = AsyncMock()
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", delete_vm)
+    host = await _create_host(
+        name="lb-sandbox-stuck",
+        status=HostStatus.CREATING_VM.value,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    reaped = await reap_expired_hosts()
+
+    assert reaped == [host.id]
+    delete_vm.assert_awaited_once_with("lb-sandbox-stuck")
+    async with async_session_factory() as session:
+        assert await session.get(Host, host.id) is None

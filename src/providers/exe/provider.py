@@ -1,0 +1,129 @@
+from typing import ClassVar, Self
+
+from core.settings import get_settings
+from providers.base import VMCreateResult, VMProvider
+from providers.capabilities import HttpProxyCapability
+from providers.exceptions import (
+    ProviderHttpProxyExistsError,
+    ProviderHttpProxyNotFoundError,
+    ProviderNotFoundError,
+    ProviderTargetVMNotFoundError,
+)
+from providers.exe.api import ExeAPI
+from providers.exe.exceptions import (
+    ExeIntegrationAlreadyExistsError,
+    ExeIntegrationNotFoundError,
+    ExeVMNotFoundError,
+)
+from providers.exe.settings import ExeSettings
+
+
+class ExeProvider(VMProvider, HttpProxyCapability):
+    name: ClassVar[str] = "exe"
+    diagnose_hint: ClassVar[str] = "check_exe_dev_api_token_and_url"
+
+    def __init__(
+        self,
+        api: ExeAPI,
+        settings: ExeSettings,
+        *,
+        service_label: str = "drukbox",
+    ) -> None:
+        self.api = api
+        self.settings = settings
+        self._service_label = service_label
+
+    @classmethod
+    def from_settings(cls) -> Self:
+        core = get_settings()
+        return cls(
+            ExeAPI.from_settings(),
+            ExeSettings(),  # pyright: ignore[reportCallIssue]
+            service_label=core.service_label,
+        )
+
+    @property
+    def default_image(self) -> str:
+        return self.settings.default_image
+
+    @property
+    def bootstrap_ssh_timeout_seconds(self) -> float:
+        return self.settings.bootstrap_ssh_timeout_seconds
+
+    async def create_vm(
+        self,
+        *,
+        name: str,
+        image: str,
+        env: dict[str, str] | None = None,
+        setup_script: str | None = None,
+    ) -> VMCreateResult:
+        payload = await self.api.create_vm(
+            name=name,
+            image=image,
+            env=env,
+            setup_script=setup_script,
+            tags=self._tags_for(name),
+        )
+        return VMCreateResult(
+            provider_id=str(payload["vm_name"]),
+            name=str(payload["vm_name"]),
+            ssh_port=int(payload["ssh_port"]),
+            # exe.dev's `new --json` payload uses `ssh_dest` for the
+            # reachable SSH address; KeyError here means the wire contract
+            # drifted and is meant to be loud.
+            ssh_host=str(payload["ssh_dest"]),
+            ssh_username=self.settings.ssh_username,
+        )
+
+    def _tags_for(self, name: str) -> list[str]:
+        # Tags are an operator-facing convenience: `exe ls --tag=managed-by-<env>`
+        # answers "what VMs does this deployment own?"
+        return [f"managed-by-{self._service_label}"]
+
+    async def delete_vm(self, name: str) -> None:
+        try:
+            await self.api.delete_vm(name)
+        except ExeVMNotFoundError as exc:
+            raise ProviderNotFoundError(str(exc)) from exc
+
+    async def aclose(self) -> None:
+        await self.api.aclose()
+
+    async def diagnose(self) -> str:
+        payload = await self.api.whoami()
+        return str(payload["email"])
+
+    async def create_http_proxy(
+        self,
+        *,
+        name: str,
+        target: str,
+        headers: dict[str, str],
+    ) -> None:
+        try:
+            await self.api.create_http_proxy(name=name, target=target, headers=headers)
+        except ExeIntegrationAlreadyExistsError as exc:
+            raise ProviderHttpProxyExistsError(str(exc)) from exc
+
+    async def delete_http_proxy(self, name: str) -> None:
+        try:
+            await self.api.delete_http_proxy(name)
+        except ExeIntegrationNotFoundError as exc:
+            raise ProviderHttpProxyNotFoundError(str(exc)) from exc
+
+    async def attach_http_proxy(self, name: str, *, attach_vm: str) -> None:
+        try:
+            await self.api.attach_http_proxy(name, attach_vm=attach_vm)
+        except ExeVMNotFoundError as exc:
+            raise ProviderTargetVMNotFoundError(str(exc)) from exc
+        except ExeIntegrationNotFoundError as exc:
+            raise ProviderHttpProxyNotFoundError(str(exc)) from exc
+
+    async def detach_http_proxy(self, name: str, *, attach_vm: str) -> None:
+        try:
+            await self.api.detach_http_proxy(name, attach_vm=attach_vm)
+        except ExeVMNotFoundError as exc:
+            raise ProviderTargetVMNotFoundError(str(exc)) from exc
+        except ExeIntegrationNotFoundError as exc:
+            raise ProviderHttpProxyNotFoundError(str(exc)) from exc
