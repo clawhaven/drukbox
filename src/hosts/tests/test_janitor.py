@@ -123,6 +123,29 @@ async def test_janitor_spares_a_renewed_host(monkeypatch):
         assert await session.get(Host, host.id) is not None
 
 
+async def test_janitor_delete_skips_a_host_renewed_in_the_race(monkeypatch):
+    # A host renewed between the janitor's expired-id selection and the locked
+    # per-row delete must be spared — a 200 renewal is a keepalive promise.
+    delete_vm = AsyncMock()
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", delete_vm)
+    host = await _create_host(
+        name="lb-sandbox-raced",
+        status=HostStatus.ACTIVE.value,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    # The janitor already selected this id as expired; the owner's renewal
+    # commits before the janitor's delete acquires the row lock.
+    async with async_session_factory() as session:
+        await HostService(session).renew_host(host.id)
+
+    async with async_session_factory() as session:
+        await HostService(session).delete_host(host.id, force=True, expired_only=True)
+
+    delete_vm.assert_not_awaited()
+    async with async_session_factory() as session:
+        assert await session.get(Host, host.id) is not None
+
+
 async def test_janitor_force_reaps_abandoned_early_state_host(monkeypatch):
     # An expired safety TTL on an early-state row means provisioning was
     # abandoned (a live provision's TTL is still in the future). The janitor

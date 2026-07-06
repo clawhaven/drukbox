@@ -340,7 +340,12 @@ class HostService:
         return host
 
     async def delete_host(
-        self, host_id: uuid.UUID, *, force: bool = False, pool_shed: bool = False
+        self,
+        host_id: uuid.UUID,
+        *,
+        force: bool = False,
+        pool_shed: bool = False,
+        expired_only: bool = False,
     ) -> None:
         host = await self.get_host_for_update(host_id)
 
@@ -350,6 +355,11 @@ class HostService:
         if pool_shed and host.claimed_at:
             # A caller claimed this host between the maintainer selecting it as
             # excess and this locked read — leave it for its owner, don't reap it.
+            return
+
+        if expired_only and (not host.expires_at or host.expires_at > utc_now()):
+            # The owner renewed this host between the janitor selecting it as
+            # expired and this locked read — the lease is live again, spare it.
             return
 
         if not force and host.status in DELETE_BLOCKED_STATUSES:
