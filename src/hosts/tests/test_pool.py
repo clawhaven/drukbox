@@ -238,12 +238,12 @@ async def test_pool_claim_overrides_pool_max_age_with_caller_expires_at(
     assert abs((claimed.expires_at - caller_expires_at).total_seconds()) < 1
 
 
-async def test_pool_claim_preserves_pool_ttl_when_caller_omits_expires_at(
+async def test_pool_claim_stamps_default_lease_when_caller_omits_expires_at(
     pooled_settings, monkeypatch
 ):
-    # Regression test for findings #2/#3: a claimed host without caller TTL
-    # used to have its expires_at wiped to NULL; the pool's max-age safety
-    # net must survive the claim so a forgotten DELETE doesn't leak forever.
+    # A claim without a caller expires_at carries the default lease, replacing
+    # the warm-pool max-age TTL — so a claimed host never leaks forever and
+    # its owner can keep it alive through renewal.
     pool_expires_at = datetime.now(UTC) + timedelta(hours=4)
     await _seed_pool_host(name="lb-pool-1", expires_at=pool_expires_at)
     monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
@@ -252,8 +252,22 @@ async def test_pool_claim_preserves_pool_ttl_when_caller_omits_expires_at(
         service = HostService(session, settings=pooled_settings)
         claimed = await service.get_or_create_host(env={}, image=None)  # no expires_at
 
+    lease_end = utc_now() + timedelta(seconds=pooled_settings.lease_default_ttl)
     assert claimed.expires_at is not None
-    assert abs((claimed.expires_at - pool_expires_at).total_seconds()) < 1
+    assert abs((claimed.expires_at - lease_end).total_seconds()) < 5
+
+
+async def test_pool_claim_honors_explicit_permanent_lease(pooled_settings, monkeypatch):
+    # An explicit expires_at=None is the caller's deliberate opt-in to a
+    # permanent host; the claim must clear the warm-pool max-age TTL.
+    await _seed_pool_host(name="lb-pool-1", expires_at=datetime.now(UTC) + timedelta(hours=4))
+    monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+
+    async with async_session_factory() as session:
+        service = HostService(session, settings=pooled_settings)
+        claimed = await service.get_or_create_host(env={}, image=None, expires_at=None)
+
+    assert claimed.expires_at is None
 
 
 async def test_concurrent_claims_dont_grab_the_same_pool_host(pooled_settings, monkeypatch):

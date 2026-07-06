@@ -70,6 +70,12 @@ class Settings(BaseSettings):
         validation_alias="PROVISIONING_GRACE_SECONDS",
         description="Safety TTL on the host row while provisioning is in flight.",
     )
+    lease_default_ttl: int = Field(
+        default=86400,
+        gt=0,
+        validation_alias="LEASE_DEFAULT_TTL",
+        description="Lease TTL in seconds for hosts created without an explicit expires_at.",
+    )
     pool_sizes: dict[str, Annotated[int, Field(ge=0)]] = Field(
         default_factory=dict,
         validation_alias="POOL_SIZES",

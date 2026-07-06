@@ -6,7 +6,7 @@ from uuid6 import uuid7
 from core.database import async_session_factory
 from hosts.janitor import reap_expired_hosts
 from hosts.models import Host, HostStatus
-from hosts.service import utc_now
+from hosts.service import HostService, utc_now
 from providers.exe.settings import ExeSettings
 
 
@@ -96,6 +96,29 @@ async def test_janitor_ignores_hosts_without_expires_at(monkeypatch):
 
     assert reaped == []
 
+    async with async_session_factory() as session:
+        assert await session.get(Host, host.id) is not None
+
+
+async def test_janitor_spares_a_renewed_host(monkeypatch):
+    # The keepalive contract: a lapsed-but-not-yet-reaped host whose owner
+    # renews in time survives the next janitor pass.
+    monkeypatch.setattr("networking.tailscale.Tailscale.release_device", AsyncMock())
+    delete_vm = AsyncMock()
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", delete_vm)
+    host = await _create_host(
+        name="lb-sandbox-renewed",
+        status=HostStatus.ACTIVE.value,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    async with async_session_factory() as session:
+        await HostService(session).renew_host(host.id)
+
+    reaped = await reap_expired_hosts()
+
+    assert reaped == []
+    delete_vm.assert_not_awaited()
     async with async_session_factory() as session:
         assert await session.get(Host, host.id) is not None
 

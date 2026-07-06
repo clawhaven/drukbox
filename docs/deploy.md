@@ -139,6 +139,7 @@ Core, optional:
 | `SERVICE_LABEL` | `drukbox` | Label stamped onto provider resources (VM tags, SG tags). |
 | `UVICORN_HOST` | `0.0.0.0` | API bind address. Set `127.0.0.1` to restrict to loopback. |
 | `PROVISIONING_GRACE_SECONDS` | `600` | Safety TTL on in-flight hosts so the janitor reaps row + VM if the client disconnects mid-provision. Must exceed the worst-case provision duration. |
+| `LEASE_DEFAULT_TTL` | `86400` | Lease TTL in seconds for hosts created without an explicit `expires_at`, and the extension applied by an empty `POST /hosts/{id}/renew`. An explicit `expires_at: null` at create time opts out of expiry entirely. |
 | `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | Retention period for successful `Idempotency-Key` mappings. |
 | `POOL_SIZES` | `{}` | Warm hosts to keep ready per provider, as JSON (e.g. `{"exe": 2, "hetzner": 1}`). Overrides `POOL_SIZE` for the providers it names. |
 | `POOL_SIZE` | `0` | Warm hosts to keep ready for the default provider. `0` disables its pool. |

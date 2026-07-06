@@ -4,6 +4,7 @@ import pathlib
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import EllipsisType
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -47,6 +48,12 @@ VM_BACKED_STATUSES = frozenset(
         HostStatus.ERROR.value,
     }
 )
+RENEWABLE_STATUSES = frozenset(
+    {
+        HostStatus.BOOTSTRAPPING.value,
+        HostStatus.ACTIVE.value,
+    }
+)
 
 
 def utc_now() -> datetime:
@@ -75,15 +82,23 @@ class HostService:
         else:
             self.tailscale = None
 
+    def _default_lease_expires_at(self) -> datetime:
+        return utc_now() + timedelta(seconds=self.settings.lease_default_ttl)
+
     async def get_or_create_host(
         self,
         *,
         env: dict[str, str],
         image: str | None,
-        expires_at: datetime | None = None,
+        expires_at: datetime | None | EllipsisType = ...,
         idempotency_key: str | None = None,
         provider: str | None = None,
     ) -> Host:
+        # ``...`` (omitted) means "default lease"; an explicit None is the
+        # caller's deliberate opt-in to a permanent, never-reaped host.
+        if expires_at is ...:
+            expires_at = self._default_lease_expires_at()
+
         if provider:
             registered = get_provider_names()
             if provider not in registered:
@@ -148,19 +163,14 @@ class HostService:
         if candidate_id is None:
             return None
 
-        # Only override the TTL when the caller asked for one. The pool
-        # maintainer set ``expires_at = created_at + pool_host_max_age_hours``
-        # at create time; preserving that means a leak-protection TTL exists
-        # for claimed hosts whose caller forgets to DELETE.
-        values: dict[str, datetime] = {"claimed_at": now, "updated_at": now}
-        if expires_at is not None:
-            values["expires_at"] = expires_at
-
+        # The claim replaces the warm-pool max-age TTL with the caller's lease:
+        # a concrete window (explicit or the default), or None for a caller
+        # who deliberately opted into a permanent host.
         result = await self.session.execute(
             update(Host)
             .where(Host.id == candidate_id)
             .where(Host.claimed_at.is_(None))
-            .values(**values)
+            .values(claimed_at=now, updated_at=now, expires_at=expires_at)
             .returning(Host)
         )
         host = result.scalar_one_or_none()
@@ -176,13 +186,15 @@ class HostService:
         *,
         env: dict[str, str],
         image: str | None,
-        expires_at: datetime | None = None,
+        expires_at: datetime | None | EllipsisType = ...,
         provider: str | None = None,
         pool_member: bool = False,
     ) -> Host:
         # Always provisions a brand-new VM; the pool maintainer calls this
         # directly (with pool_member=True) so it never recursively claims its
         # own pool members.
+        if expires_at is ...:
+            expires_at = self._default_lease_expires_at()
         vm = get_vm_provider(provider)
         uid = uuid7()
         name = Host.build_name(uid)
@@ -308,6 +320,24 @@ class HostService:
     async def list_hosts(self) -> list[Host]:
         result = await self.session.execute(select(Host).order_by(Host.created_at.desc()))
         return list(result.scalars())
+
+    async def renew_host(self, host_id: uuid.UUID, *, expires_at: datetime | None = None) -> Host:
+        host = await self.get_host_for_update(host_id)
+
+        if host is None:
+            raise ResourceNotFoundError("host not found")
+
+        if host.pool_member and not host.claimed_at:
+            raise HostStateError("unclaimed pool host is managed by pool maintenance")
+
+        if host.status not in RENEWABLE_STATUSES:
+            raise HostStateError(f"cannot renew a host in status {host.status}")
+
+        host.expires_at = expires_at or self._default_lease_expires_at()
+        host.updated_at = utc_now()
+        await self.session.commit()
+        await self.session.refresh(host)
+        return host
 
     async def delete_host(
         self, host_id: uuid.UUID, *, force: bool = False, pool_shed: bool = False

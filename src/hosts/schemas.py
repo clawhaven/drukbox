@@ -8,6 +8,16 @@ RESERVED_HOST_ENV_KEYS = frozenset({"TAILSCALE_AUTHKEY"})
 _ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+def _expires_at_must_be_future_and_tz_aware(expires_at: datetime | None) -> datetime | None:
+    if expires_at is None:
+        return None
+    if expires_at.tzinfo is None:
+        raise ValueError("expires_at must include a timezone offset")
+    if expires_at <= datetime.now(UTC):
+        raise ValueError("expires_at must be in the future")
+    return expires_at
+
+
 class HostCreate(BaseModel):
     image: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
@@ -40,16 +50,15 @@ class HostCreate(BaseModel):
             raise ValueError(f"reserved env keys are not allowed: {', '.join(reserved_keys)}")
         return env
 
-    @field_validator("expires_at")
-    @classmethod
-    def expires_at_must_be_future_and_tz_aware(cls, expires_at: datetime | None) -> datetime | None:
-        if expires_at is None:
-            return None
-        if expires_at.tzinfo is None:
-            raise ValueError("expires_at must include a timezone offset")
-        if expires_at <= datetime.now(UTC):
-            raise ValueError("expires_at must be in the future")
-        return expires_at
+    _validate_expires_at = field_validator("expires_at")(_expires_at_must_be_future_and_tz_aware)
+
+
+class HostRenew(BaseModel):
+    # Omitted (or null) means "extend by LEASE_DEFAULT_TTL from now"; renewal
+    # never makes a host permanent — that is a create-time choice.
+    expires_at: datetime | None = None
+
+    _validate_expires_at = field_validator("expires_at")(_expires_at_must_be_future_and_tz_aware)
 
 
 class HostOut(BaseModel):
