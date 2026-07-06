@@ -5,10 +5,15 @@ import pytest
 from uuid6 import uuid7
 
 from core.database import async_session_factory
+from core.settings import get_settings
 from hosts.exceptions import HostStateError
 from hosts.models import Host, HostStatus
 from hosts.service import HostService, utc_now
-from http_proxies.exceptions import HTTPProxyExistsError, HTTPProxyNotFoundError
+from http_proxies.exceptions import (
+    HTTPProxyExistsError,
+    HTTPProxyNotFoundError,
+    HTTPProxyUnsupportedError,
+)
 from http_proxies.service import HTTPProxyService
 from providers.exceptions import (
     ProviderHttpProxyExistsError,
@@ -54,6 +59,21 @@ async def test_create_http_proxy_maps_already_exists(monkeypatch):
             )
 
 
+async def test_create_http_proxy_unsupported_on_default_provider(monkeypatch):
+    """Create refuses with the unsupported error when the default provider lacks the capability."""
+    monkeypatch.setattr(get_settings(), "default_host_provider", "docker")
+
+    async with async_session_factory() as session:
+        service = HTTPProxyService(session)
+
+        with pytest.raises(HTTPProxyUnsupportedError, match="docker"):
+            await service.create_http_proxy(
+                name="gmail-mcp",
+                target="https://gmailmcp.googleapis.com",
+                headers={"Authorization": "Bearer token"},
+            )
+
+
 async def test_attach_http_proxy_uses_host_vm_name(monkeypatch):
     mocked_attach = AsyncMock()
     monkeypatch.setattr("providers.exe.provider.ExeProvider.attach_http_proxy", mocked_attach)
@@ -76,6 +96,39 @@ async def test_detach_http_proxy_uses_host_vm_name(monkeypatch):
         await service.detach_http_proxy("gmail-mcp", host.id)
 
     mocked_detach.assert_awaited_once_with("gmail-mcp", attach_vm="lb-sandbox-test")
+
+
+async def test_attach_http_proxy_resolves_hosts_provider_not_default(monkeypatch):
+    """Attach refuses when the host's provider lacks the capability, even if the default has it."""
+    mocked_attach = AsyncMock()
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.attach_http_proxy", mocked_attach)
+    host = await create_host_record(
+        name="lb-sandbox-test",
+        status=HostStatus.ACTIVE.value,
+        provider="docker",
+    )
+
+    async with async_session_factory() as session:
+        service = HTTPProxyService(session)
+
+        with pytest.raises(HTTPProxyUnsupportedError, match="docker"):
+            await service.attach_http_proxy("gmail-mcp", host.id)
+
+    mocked_attach.assert_not_awaited()
+
+
+async def test_attach_http_proxy_on_non_default_provider_with_capability(monkeypatch):
+    """Attach reaches the host's provider when only that non-default provider has the capability."""
+    monkeypatch.setattr(get_settings(), "default_host_provider", "docker")
+    mocked_attach = AsyncMock()
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.attach_http_proxy", mocked_attach)
+    host = await create_host_record(name="lb-sandbox-test", status=HostStatus.ACTIVE.value)
+
+    async with async_session_factory() as session:
+        service = HTTPProxyService(session)
+        await service.attach_http_proxy("gmail-mcp", host.id)
+
+    mocked_attach.assert_awaited_once_with("gmail-mcp", attach_vm="lb-sandbox-test")
 
 
 async def test_detach_http_proxy_maps_not_found(monkeypatch):
@@ -175,6 +228,7 @@ async def create_host_record(
     id: uuid.UUID | None = None,
     name: str,
     status: str,
+    provider: str = "exe",
     tailscale_device_id: str | None = None,
 ) -> Host:
     now = utc_now()
@@ -182,7 +236,7 @@ async def create_host_record(
         id=id or uuid7(),
         name=name,
         status=status,
-        provider="exe",
+        provider=provider,
         image=ExeSettings().default_image,  # pyright: ignore[reportCallIssue]
         env={},
         internal_ssh_host=f"{name}.example.ts.net",

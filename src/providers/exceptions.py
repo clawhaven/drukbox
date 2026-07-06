@@ -32,3 +32,7 @@ class ProviderHttpProxyNotFoundError(ProviderNotFoundError):
 
 class UnknownProviderError(ProviderError):
     pass
+
+
+class CapabilityUnsupportedError(ProviderError):
+    pass

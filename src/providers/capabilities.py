@@ -1,8 +1,18 @@
 import abc
+from typing import TypeVar
 
 from providers.base import VMProvider
-from providers.exceptions import UnknownProviderError
-from providers.registry import get_default_vm_provider
+from providers.exceptions import CapabilityUnsupportedError
+
+CapabilityT = TypeVar("CapabilityT")
+
+
+def resolve_capability(provider: VMProvider, capability: type[CapabilityT]) -> CapabilityT:
+    if not isinstance(provider, capability):
+        raise CapabilityUnsupportedError(
+            f"VM provider '{provider.name}' does not support {capability.__name__}",
+        )
+    return provider
 
 
 class HttpProxyCapability(abc.ABC):
@@ -31,13 +41,3 @@ class HttpProxyCapability(abc.ABC):
 
     @abc.abstractmethod
     async def detach_http_proxy(self, name: str, *, attach_vm: str) -> None: ...
-
-
-def get_default_http_proxy_capability() -> HttpProxyCapability:
-    provider: VMProvider = get_default_vm_provider()
-
-    if not isinstance(provider, HttpProxyCapability):
-        raise UnknownProviderError(
-            f"default VM provider '{provider.name}' does not support http proxies",
-        )
-    return provider

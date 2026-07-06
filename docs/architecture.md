@@ -68,11 +68,14 @@ the core settings knowing any provider exists.
 
 Not every provider supports every feature, and the host contract must
 not grow provider-shaped warts. Optional features are capability
-mix-ins: `HttpProxyCapability` declares the http-proxy surface, the
-exe provider implements it, and the http-proxies routes refuse with a
-clear error when the active provider doesn't. New provider-specific
-features should follow this pattern rather than widening `VMProvider`
-or the host schema.
+mix-ins: `HttpProxyCapability` declares the http-proxy surface and the
+exe provider implements it. `resolve_capability` narrows a specific
+provider instance to a capability — the default provider for
+account-bound operations, the host's own provider for host-bound ones
+— and raises the shared `CapabilityUnsupportedError` when that
+provider doesn't implement it, which the routes surface as a clear
+error. New provider-specific features should follow this pattern
+rather than widening `VMProvider` or the host schema.
 
 The review question that guards the whole design: *does this change
 leak a provider into the contract?*
