@@ -13,6 +13,8 @@ class StubVMProvider(VMProvider):
 
     name = "stub"
     diagnose_hint = "check_stub"
+    supports_instance_type = True
+    supports_disk_gb = True
 
     def __init__(self) -> None:
         self.deleted: list[str] = []
@@ -36,6 +38,8 @@ class StubVMProvider(VMProvider):
         image: str,
         env: dict[str, str] | None = None,
         setup_script: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> VMCreateResult:
         return VMCreateResult(provider_id=name, name=name, ssh_port=22, ssh_username="stub")
 

@@ -47,6 +47,9 @@ its exception types.
 `providers.base.VMProvider` is the whole interface:
 
 - `name` / `diagnose_hint` class vars
+- `supports_instance_type` / `supports_disk_gb` class vars — which
+  per-request sizing fields `create_vm` honors; the host service
+  refuses unsupported sizing with a 400 before any row or VM exists
 - `default_image` / `bootstrap_ssh_timeout_seconds` properties
 - `create_vm(...) -> VMCreateResult`
 - `delete_vm(name)`
@@ -106,7 +109,10 @@ Two maintenance commands run as cron jobs from the same image:
 `hosts.janitor` reaps expired and orphaned hosts, `hosts.pool` keeps a
 warm pool of pre-provisioned hosts per provider (`POOL_SIZES`, with
 `POOL_SIZE` as the default provider's target) to hide provider cold
-starts.
+starts. Pool members are warmed with the provider's default image and
+size, so a request that customizes its host — `image`, `env`,
+`instance_type`, or `disk_gb` — always provisions fresh instead of
+claiming a warm host.
 
 ## Diagnostics
 

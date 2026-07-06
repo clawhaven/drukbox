@@ -12,7 +12,7 @@ from hosts.models import Host
 from hosts.schemas import HostCreate, HostOut, HostRenew
 from hosts.service import HostService
 from networking.tailscale import NetworkError
-from providers.exceptions import ProviderError, UnknownProviderError
+from providers.exceptions import ProviderError, UnknownProviderError, UnsupportedSizingError
 
 log = logging.getLogger(__name__)
 
@@ -57,8 +57,10 @@ async def create_host(
             expires_at=expires_at,
             idempotency_key=idempotency_key,
             provider=host_create.provider,
+            instance_type=host_create.instance_type,
+            disk_gb=host_create.disk_gb,
         )
-    except UnknownProviderError as exc:
+    except (UnknownProviderError, UnsupportedSizingError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
         log.exception("unexpected database error during host provisioning")

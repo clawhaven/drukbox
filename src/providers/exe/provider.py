@@ -57,6 +57,8 @@ class ExeProvider(VMProvider, HttpProxyCapability):
         image: str,
         env: dict[str, str] | None = None,
         setup_script: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> VMCreateResult:
         payload = await self.api.create_vm(
             name=name,

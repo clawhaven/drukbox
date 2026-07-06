@@ -18,6 +18,11 @@ class VMProvider(abc.ABC):
     # Remediation slug attached to a failed /doctor probe. Owned here because
     # the provider is what knows how its own dependency gets fixed.
     diagnose_hint: ClassVar[str]
+    # Which per-request sizing fields create_vm honors. HostService rejects a
+    # sized request up front — before any host row or VM exists — when the
+    # target provider leaves these False.
+    supports_instance_type: ClassVar[bool] = False
+    supports_disk_gb: ClassVar[bool] = False
 
     @classmethod
     @abc.abstractmethod
@@ -45,6 +50,8 @@ class VMProvider(abc.ABC):
         image: str,
         env: dict[str, str] | None = None,
         setup_script: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> VMCreateResult: ...
 
     @abc.abstractmethod

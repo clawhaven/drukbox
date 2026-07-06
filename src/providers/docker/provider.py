@@ -58,6 +58,8 @@ class DockerProvider(VMProvider):
         image: str,
         env: dict[str, str] | None = None,
         setup_script: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> VMCreateResult:
         # A setup script only ever arrives when Tailscale is enabled, and a
         # local container has no path onto the tailnet. Fail loud rather than

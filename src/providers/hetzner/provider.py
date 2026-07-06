@@ -14,6 +14,9 @@ from .settings import HetznerSettings
 class HetznerProvider(VMProvider):
     name: ClassVar[str] = "hetzner"
     diagnose_hint: ClassVar[str] = "check_hetzner_api_token_and_location"
+    # instance_type maps onto Hetzner's server type; root disk size is fixed
+    # by the server type, so disk_gb stays unsupported.
+    supports_instance_type: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -51,6 +54,8 @@ class HetznerProvider(VMProvider):
         image: str,
         env: dict[str, str] | None = None,
         setup_script: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> VMCreateResult:
         # Always mint a per-VM key, in both networking modes: Hetzner servers
         # have a public IP and no firewall by default, and attaching a key both
@@ -70,6 +75,7 @@ class HetznerProvider(VMProvider):
             server_id = await self.api.create_server(
                 name=name,
                 image=image,
+                server_type=instance_type,
                 ssh_key_name=key_name,
                 user_data=user_data,
                 labels=labels,

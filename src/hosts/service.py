@@ -26,6 +26,7 @@ from providers.exceptions import (
     ProviderNotFoundError,
     ProviderTransportError,
     UnknownProviderError,
+    UnsupportedSizingError,
 )
 from providers.registry import get_provider_names, get_vm_provider
 
@@ -93,6 +94,8 @@ class HostService:
         expires_at: datetime | None | EllipsisType = ...,
         idempotency_key: str | None = None,
         provider: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> Host:
         # ``...`` (omitted) means "default lease"; an explicit None is the
         # caller's deliberate opt-in to a permanent, never-reaped host. The
@@ -113,15 +116,22 @@ class HostService:
         host: Host | None = None
         # Warm hosts are provider-specific, so the claim is scoped to the
         # requested provider's pool. A request is pool-eligible only when it
-        # doesn't customize the host: default image and no env.
+        # doesn't customize the host: default image, no env, and no per-request
+        # sizing — pool members are warmed at the provider's default size.
         requested_provider = provider or self.settings.default_host_provider
-        if not env and image is None and self.settings.get_pool_targets().get(requested_provider):
+        customized = env or image is not None or instance_type or disk_gb
+        if not customized and self.settings.get_pool_targets().get(requested_provider):
             host = await self._try_claim_pool_host(
                 provider=requested_provider, expires_at=expires_at
             )
         if host is None:
             host = await self.create_host(
-                env=env, image=image, expires_at=expires_at, provider=provider
+                env=env,
+                image=image,
+                expires_at=expires_at,
+                provider=provider,
+                instance_type=instance_type,
+                disk_gb=disk_gb,
             )
 
         if idempotency_key and not await self._record_idempotency_key(idempotency_key, host):
@@ -190,12 +200,22 @@ class HostService:
         image: str | None,
         expires_at: datetime | None | EllipsisType = ...,
         provider: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
         pool_member: bool = False,
     ) -> Host:
         # Always provisions a brand-new VM; the pool maintainer calls this
         # directly (with pool_member=True) so it never recursively claims its
         # own pool members.
         vm = get_vm_provider(provider)
+        if instance_type and not vm.supports_instance_type:
+            raise UnsupportedSizingError(
+                f"provider {vm.name!r} does not support a per-request instance_type"
+            )
+        if disk_gb and not vm.supports_disk_gb:
+            raise UnsupportedSizingError(
+                f"provider {vm.name!r} does not support a per-request disk_gb"
+            )
         uid = uuid7()
         name = Host.build_name(uid)
         now = utc_now()
@@ -217,6 +237,8 @@ class HostService:
             name=name,
             provider=vm.name,
             image=host_image,
+            instance_type=instance_type,
+            disk_gb=disk_gb,
             status=HostStatus.PROVISIONING.value,
             created_at=now,
             updated_at=now,
@@ -445,6 +467,8 @@ class HostService:
                 image=host.image,
                 env=environment,
                 setup_script=setup_script,
+                instance_type=host.instance_type,
+                disk_gb=host.disk_gb,
             )
         except (ProviderCommandError, ProviderTransportError) as exc:
             await self.mark_failed(host, exc)

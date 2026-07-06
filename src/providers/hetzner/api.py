@@ -72,10 +72,11 @@ class HetznerAPI:
         ssh_key_name: str,
         user_data: str,
         labels: dict[str, str],
+        server_type: str | None = None,
     ) -> str:
         body: dict[str, Any] = {
             "name": name,
-            "server_type": self.server_type,
+            "server_type": server_type or self.server_type,
             "image": image,
             "location": self.location,
             "ssh_keys": [ssh_key_name],

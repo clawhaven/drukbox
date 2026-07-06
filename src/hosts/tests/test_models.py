@@ -102,6 +102,10 @@ async def test_provision_walks_host_to_active(monkeypatch):
     create_vm_kwargs = mocks["create_vm"].await_args.kwargs
     assert create_vm_kwargs["name"] == "lb-sandbox-test"
     assert create_vm_kwargs["image"] == "ghcr.io/drukbox/custom-sandbox:provision-test"
+    # No per-request sizing on the row → the provider falls back to its
+    # configured default size.
+    assert create_vm_kwargs["instance_type"] is None
+    assert create_vm_kwargs["disk_gb"] is None
     assert create_vm_kwargs["env"]["TAILSCALE_AUTHKEY"] == "tskey-secret"
     assert create_vm_kwargs["env"]["TAILSCALE_ADVERTISE_TAGS"] == "tag:sandbox"
     assert create_vm_kwargs["env"]["SANDBOX_GATEWAY_URL"] == "wss://gateway.example.ts.net/daemon"
@@ -117,6 +121,26 @@ async def test_provision_walks_host_to_active(monkeypatch):
     assert mocks["wait_for_device"].await_args is not None
     wait_kwargs = mocks["wait_for_device"].await_args.kwargs
     assert wait_kwargs["host_name"] == "exe-runtime-1"
+
+
+async def test_provision_forwards_sizing_from_the_row_to_create_vm(monkeypatch):
+    # provision() reads sizing off the host row, not from request state, so a
+    # janitor-retried or resumed provision still launches the requested size.
+    host = await create_host_record(
+        name="lb-sized",
+        status="provisioning",
+        instance_type="t3.xlarge",
+        disk_gb=250,
+    )
+    mocks = await _patch_provision_happy_path(monkeypatch)
+
+    async with async_session_factory() as session:
+        await HostService(session).provision(str(host.id))
+
+    assert mocks["create_vm"].await_args is not None
+    create_vm_kwargs = mocks["create_vm"].await_args.kwargs
+    assert create_vm_kwargs["instance_type"] == "t3.xlarge"
+    assert create_vm_kwargs["disk_gb"] == 250
 
 
 async def test_provision_threads_ssh_username_from_vm_result_onto_host(monkeypatch):
@@ -488,6 +512,8 @@ async def create_host_record(
     status: str,
     env: dict[str, str] | None = None,
     image: str | None = None,
+    instance_type: str | None = None,
+    disk_gb: int | None = None,
     tailscale_device_id: str | None = None,
 ) -> Host:
     now = utc_now()
@@ -496,6 +522,8 @@ async def create_host_record(
         name=name,
         status=status,
         image=image or ExeSettings().default_image,  # pyright: ignore[reportCallIssue]
+        instance_type=instance_type,
+        disk_gb=disk_gb,
         internal_ssh_host=f"{name}.example.ts.net",
         external_ssh_host="",
         env=env or {},

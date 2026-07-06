@@ -2,7 +2,7 @@ import re
 import uuid
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 RESERVED_HOST_ENV_KEYS = frozenset({"TAILSCALE_AUTHKEY"})
 _ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -26,13 +26,25 @@ class HostCreate(BaseModel):
         default=None,
         description="VM provider to provision on. Omit to use the service default.",
     )
+    instance_type: str | None = Field(
+        default=None,
+        description=(
+            "Provider-native instance size, e.g. AWS `t3.xlarge` or Hetzner "
+            "`cx33`. Omit to use the provider's configured default."
+        ),
+    )
+    disk_gb: int | None = Field(
+        default=None,
+        ge=1,
+        description="Root disk size in GB. Omit to use the provider's configured default.",
+    )
 
-    @field_validator("image")
+    @field_validator("image", "instance_type")
     @classmethod
-    def reject_blank_image(cls, image: str | None) -> str | None:
-        if image is not None and not image.strip():
-            raise ValueError("image must not be blank")
-        return image
+    def reject_blank(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
 
     @field_validator("env")
     @classmethod
@@ -69,6 +81,8 @@ class HostOut(BaseModel):
     status: str
     provider: str
     image: str
+    instance_type: str | None
+    disk_gb: int | None
     external_ssh_host: str
     external_ssh_port: int
     ssh_username: str

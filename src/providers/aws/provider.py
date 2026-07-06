@@ -23,6 +23,8 @@ _MANAGED_SG_DESCRIPTION = "SSH ingress for drukbox-managed sandbox VMs."
 class AWSProvider(VMProvider):
     name: ClassVar[str] = "aws"
     diagnose_hint: ClassVar[str] = "check_aws_credentials_and_region"
+    supports_instance_type: ClassVar[bool] = True
+    supports_disk_gb: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -64,6 +66,8 @@ class AWSProvider(VMProvider):
         image: str,
         env: dict[str, str] | None = None,
         setup_script: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> VMCreateResult:
         if image.startswith("ami-"):
             ami_id = image
@@ -108,9 +112,9 @@ class AWSProvider(VMProvider):
             instance_id = await self.api.run_instance(
                 client_token=name,
                 ami_id=ami_id,
-                instance_type=self.settings.instance_type,
+                instance_type=instance_type or self.settings.instance_type,
                 key_name=key_name,
-                root_gb=self.settings.root_gb,
+                root_gb=disk_gb or self.settings.root_gb,
                 tags=tags,
                 user_data=user_data,
                 associate_public_ip=associate_public_ip,
