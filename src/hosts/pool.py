@@ -1,5 +1,6 @@
 import logging
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from sqlalchemy import func, or_, select
@@ -13,7 +14,7 @@ from networking.tailscale import Tailscale
 log = logging.getLogger(__name__)
 
 # Bail out after this many consecutive create failures (broker outage scenario)
-# rather than logging the same failure pool_size times per tick.
+# rather than logging the same failure once per deficit slot per tick.
 _MAX_CONSECUTIVE_CREATE_FAILURES = 3
 
 
@@ -21,53 +22,63 @@ _MAX_CONSECUTIVE_CREATE_FAILURES = 3
 class PoolMaintenanceSummary:
     created: int = 0
     removed_excess: int = 0
-    pool_size: int = 0
+    targets: dict[str, int] = field(default_factory=dict)
 
 
 async def maintain_pool() -> PoolMaintenanceSummary:
-    """Top up / shrink the warm-host pool and reap failed pool members.
+    """Top up / shrink each provider's warm-host pool and reap failed pool members.
 
-    Each tick creates at most ``POOL_MAX_CREATES_PER_TICK`` hosts. Overlapping
-    ticks or accidental scheduler replicas can therefore over-provision by at
-    most that batch size, which the next tick sheds via the excess path. This
-    intentionally avoids any cross-tick locking — see CONTRIBUTING for context.
+    Each tick creates at most ``POOL_MAX_CREATES_PER_TICK`` hosts across all
+    providers. Overlapping ticks or accidental scheduler replicas can therefore
+    over-provision by at most that batch size, which the next tick sheds via the
+    excess path. This intentionally avoids any cross-tick locking — see
+    CONTRIBUTING for context.
     """
     settings = get_settings()
-    if settings.pool_size <= 0:
-        return PoolMaintenanceSummary(pool_size=settings.pool_size)
+    targets = settings.get_pool_targets()
+    if not targets:
+        return PoolMaintenanceSummary()
     tailscale: Tailscale | None = Tailscale.from_settings() if settings.tailscale_enabled else None
     try:
-        return await _maintain(settings, tailscale)
+        return await _maintain(settings, targets, tailscale)
     finally:
         if tailscale is not None:
             await tailscale.aclose()
 
 
-async def _maintain(settings: Settings, tailscale: Tailscale | None) -> PoolMaintenanceSummary:
+async def _maintain(
+    settings: Settings, targets: dict[str, int], tailscale: Tailscale | None
+) -> PoolMaintenanceSummary:
     now = utc_now()
 
     async with async_session_factory() as session:
-        # Count warm pool members that are still fresh and unclaimed. Only
-        # pool_member hosts count — demand-provisioned hosts also keep
-        # claimed_at NULL but must never be counted or shed. Exclude hosts whose
-        # expires_at has already passed — those are queued for janitor reaping.
-        current = await session.scalar(
-            select(func.count())
-            .select_from(Host)
+        # Count warm pool members per provider that are still fresh and
+        # unclaimed. Only pool_member hosts count — demand-provisioned hosts
+        # also keep claimed_at NULL but must never be counted or shed. Exclude
+        # hosts whose expires_at has already passed — those are queued for
+        # janitor reaping.
+        counted = await session.execute(
+            select(Host.provider, func.count())
             .where(Host.pool_member.is_(True))
             .where(Host.claimed_at.is_(None))
             .where(Host.status != HostStatus.ERROR.value)
             .where(or_(Host.expires_at.is_(None), Host.expires_at > now))
+            .group_by(Host.provider)
         )
-        current = current or 0
+        current: dict[str, int] = {provider: count for provider, count in counted.all()}
 
-        excess_ids: list = []
-        if current > settings.pool_size:
-            shed = current - settings.pool_size
-            excess_ids = list(
+        excess_ids: list[uuid.UUID] = []
+        # Sweep the union of configured and present providers: one dropped from
+        # the targets sheds to zero instead of idling until its max-age TTL.
+        for provider in sorted(current.keys() | targets.keys()):
+            shed = current.get(provider, 0) - targets.get(provider, 0)
+            if shed <= 0:
+                continue
+            excess_ids.extend(
                 (
                     await session.execute(
                         select(Host.id)
+                        .where(Host.provider == provider)
                         .where(Host.pool_member.is_(True))
                         .where(Host.claimed_at.is_(None))
                         .where(Host.status != HostStatus.ERROR.value)
@@ -78,12 +89,26 @@ async def _maintain(settings: Settings, tailscale: Tailscale | None) -> PoolMain
                 ).scalars()
             )
 
-    deficit = max(settings.pool_size - current, 0)
-    batch = min(deficit, settings.pool_max_creates_per_tick)
+    deficits = {
+        provider: target - current.get(provider, 0)
+        for provider, target in sorted(targets.items())
+        if target > current.get(provider, 0)
+    }
+    # Round-robin the global per-tick budget across providers so one large
+    # deficit can't starve the others.
+    batch: list[str] = []
+    while deficits and len(batch) < settings.pool_max_creates_per_tick:
+        for provider in list(deficits):
+            if len(batch) == settings.pool_max_creates_per_tick:
+                break
+            batch.append(provider)
+            deficits[provider] -= 1
+            if not deficits[provider]:
+                del deficits[provider]
 
     created = 0
     consecutive_failures = 0
-    for _ in range(batch):
+    for provider in batch:
         try:
             async with async_session_factory() as session:
                 service = HostService(session, settings=settings, tailscale=tailscale)
@@ -92,13 +117,14 @@ async def _maintain(settings: Settings, tailscale: Tailscale | None) -> PoolMain
                     env={},
                     image=None,
                     expires_at=expires_at,
+                    provider=provider,
                     pool_member=True,
                 )
                 created += 1
                 consecutive_failures = 0
         except Exception:
             consecutive_failures += 1
-            log.exception("pool: failed to create pool host")
+            log.exception("pool: failed to create pool host provider=%s", provider)
             if consecutive_failures >= _MAX_CONSECUTIVE_CREATE_FAILURES:
                 log.error(
                     "pool: aborting top-up after %d consecutive failures",
@@ -118,16 +144,16 @@ async def _maintain(settings: Settings, tailscale: Tailscale | None) -> PoolMain
 
     if created or removed_excess:
         log.info(
-            "pool: maintained (created=%d, removed_excess=%d, target=%d)",
+            "pool: maintained (created=%d, removed_excess=%d, targets=%s)",
             created,
             removed_excess,
-            settings.pool_size,
+            targets,
         )
 
     return PoolMaintenanceSummary(
         created=created,
         removed_excess=removed_excess,
-        pool_size=settings.pool_size,
+        targets=targets,
     )
 
 

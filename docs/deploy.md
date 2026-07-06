@@ -25,7 +25,8 @@ docker run --rm --env-file drukbox.env "$IMAGE" .venv/bin/python -m hosts.pool
 ```
 
 The janitor reaps expired and orphaned hosts. The pool maintainer
-pre-provisions warm hosts and only does anything when `POOL_SIZE > 0`.
+pre-provisions warm hosts per provider and only does anything when at
+least one provider has a warm target (`POOL_SIZES` / `POOL_SIZE`).
 Schedule both under your cron infrastructure (k8s `CronJob`, systemd
 timer) from the same image and env file.
 
@@ -139,9 +140,10 @@ Core, optional:
 | `UVICORN_HOST` | `0.0.0.0` | API bind address. Set `127.0.0.1` to restrict to loopback. |
 | `PROVISIONING_GRACE_SECONDS` | `600` | Safety TTL on in-flight hosts so the janitor reaps row + VM if the client disconnects mid-provision. Must exceed the worst-case provision duration. |
 | `IDEMPOTENCY_KEY_TTL_HOURS` | `24` | Retention period for successful `Idempotency-Key` mappings. |
-| `POOL_SIZE` | `0` | Warm hosts to keep ready. `0` disables pooling. |
+| `POOL_SIZES` | `{}` | Warm hosts to keep ready per provider, as JSON (e.g. `{"exe": 2, "hetzner": 1}`). Overrides `POOL_SIZE` for the providers it names. |
+| `POOL_SIZE` | `0` | Warm hosts to keep ready for the default provider. `0` disables its pool. |
 | `POOL_HOST_MAX_AGE_HOURS` | `4` | Max age before the janitor reaps an unclaimed pool host. |
-| `POOL_MAX_CREATES_PER_TICK` | `2` | Upper bound on pool provisions per tick; caps over-provision blast radius when ticks overlap. |
+| `POOL_MAX_CREATES_PER_TICK` | `2` | Upper bound on pool provisions per tick, across all providers; caps over-provision blast radius when ticks overlap. |
 
 Tailscale (required when `TAILSCALE_ENABLED=true`):
 

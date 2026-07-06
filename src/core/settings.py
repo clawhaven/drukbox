@@ -70,11 +70,22 @@ class Settings(BaseSettings):
         validation_alias="PROVISIONING_GRACE_SECONDS",
         description="Safety TTL on the host row while provisioning is in flight.",
     )
+    pool_sizes: dict[str, Annotated[int, Field(ge=0)]] = Field(
+        default_factory=dict,
+        validation_alias="POOL_SIZES",
+        description=(
+            'Pre-warmed host targets per provider, as JSON (e.g. {"exe": 2, "hetzner": 1}). '
+            "Overrides POOL_SIZE for the providers it names."
+        ),
+    )
     pool_size: int = Field(
         default=0,
         ge=0,
         validation_alias="POOL_SIZE",
-        description="Number of pre-warmed hosts to keep ready. 0 disables pooling.",
+        description=(
+            "Number of pre-warmed hosts to keep ready for the default provider. "
+            "0 disables its pool. A POOL_SIZES entry for that provider wins."
+        ),
     )
     pool_host_max_age_hours: int = Field(
         default=4,
@@ -86,8 +97,14 @@ class Settings(BaseSettings):
         default=2,
         ge=0,
         validation_alias="POOL_MAX_CREATES_PER_TICK",
-        description="Upper bound on pool-maintainer provisions per tick.",
+        description="Upper bound on pool-maintainer provisions per tick, across all providers.",
     )
+
+    def get_pool_targets(self) -> dict[str, int]:
+        # POOL_SIZE seeds the default provider's target and POOL_SIZES
+        # overrides per provider; providers at zero drop out entirely.
+        targets = {self.default_host_provider: self.pool_size, **self.pool_sizes}
+        return {provider: target for provider, target in targets.items() if target > 0}
 
 
 @lru_cache

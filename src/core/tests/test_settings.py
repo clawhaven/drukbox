@@ -100,6 +100,49 @@ def test_numeric_settings_reject_negative_values(monkeypatch: pytest.MonkeyPatch
         _settings_with(monkeypatch, env)
 
 
+def test_pool_size_seeds_the_default_providers_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    env: dict[str, str | None] = {
+        **_base_env(),
+        "DEFAULT_HOST_PROVIDER": None,
+        "POOL_SIZE": "2",
+        "POOL_SIZES": None,
+    }
+    settings = _settings_with(monkeypatch, env)
+    assert settings.get_pool_targets() == {"exe": 2}
+
+
+def test_pool_sizes_overrides_the_alias_for_the_same_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env: dict[str, str | None] = {
+        **_base_env(),
+        "DEFAULT_HOST_PROVIDER": None,
+        "POOL_SIZE": "5",
+        "POOL_SIZES": '{"exe": 2, "hetzner": 1}',
+    }
+    settings = _settings_with(monkeypatch, env)
+    assert settings.get_pool_targets() == {"exe": 2, "hetzner": 1}
+
+
+def test_pool_targets_omit_zeroed_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An explicit zero in POOL_SIZES disables that provider's pool even when
+    # the POOL_SIZE alias would seed it.
+    env: dict[str, str | None] = {
+        **_base_env(),
+        "DEFAULT_HOST_PROVIDER": None,
+        "POOL_SIZE": "5",
+        "POOL_SIZES": '{"exe": 0}',
+    }
+    settings = _settings_with(monkeypatch, env)
+    assert settings.get_pool_targets() == {}
+
+
+def test_pool_sizes_rejects_negative_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    env: dict[str, str | None] = {**_base_env(), "POOL_SIZES": '{"exe": -1}'}
+    with pytest.raises(ValueError, match="POOL_SIZES"):
+        _settings_with(monkeypatch, env)
+
+
 def test_load_test_env_overrides_ambient_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TAILSCALE_ENABLED", "false")
     conftest.load_test_env()
