@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 from uuid6 import uuid7
@@ -205,6 +206,93 @@ async def test_create_host_rejects_past_expires_at(client):
     detail = response.json()["detail"]
     assert detail[0]["loc"] == ["body", "expires_at"]
     assert "in the future" in detail[0]["msg"]
+
+
+async def test_create_host_defaults_expires_at_to_lease_ttl(client, monkeypatch):
+    # Safe-by-default lifecycle: omitting expires_at yields a renewable lease,
+    # not a permanent host, so an abandoned host self-reaps.
+    monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+    ttl = timedelta(seconds=get_settings().lease_default_ttl)
+
+    before = utc_now()
+    response = await client.post("/hosts", headers={"Authorization": "Bearer service-token"})
+    after = utc_now()
+
+    assert response.status_code == 201
+    expires_at = datetime.fromisoformat(response.json()["expires_at"])
+    assert before + ttl <= expires_at <= after + ttl
+
+
+async def test_create_host_keeps_safety_ttl_while_provisioning(monkeypatch):
+    # The in-flight row carries the short provisioning-grace TTL, not the full
+    # default lease, so an abandoned provision reaps after the grace window;
+    # the lease itself is stamped once the host is usable.
+    inflight = {}
+
+    async def capture_inflight_expiry(self, host_id):
+        async with async_session_factory() as session:
+            row = await session.get(Host, uuid.UUID(host_id))
+            assert row is not None
+            inflight["expires_at"] = row.expires_at
+
+    monkeypatch.setattr("hosts.service.HostService.provision", capture_inflight_expiry)
+    grace = timedelta(seconds=get_settings().provisioning_grace_seconds)
+    ttl = timedelta(seconds=get_settings().lease_default_ttl)
+
+    async with async_session_factory() as session:
+        before = utc_now()
+        host = await HostService(session).create_host(env={}, image=None)
+        after = utc_now()
+
+    assert before + grace <= inflight["expires_at"] <= after + grace
+    assert host.expires_at is not None
+    assert before + ttl <= host.expires_at <= after + ttl
+
+
+async def test_create_host_preserves_renewal_made_during_provisioning(monkeypatch):
+    # A client whose POST timed out can find the bootstrapping row and renew
+    # it; the create's post-provision TTL rewrite must not clobber that newer
+    # lease when provisioning finishes.
+    renewal = {}
+
+    async def renew_mid_provision(self, host_id):
+        async with async_session_factory() as session:
+            row = await session.get(Host, uuid.UUID(host_id))
+            assert row is not None
+            row.status = HostStatus.BOOTSTRAPPING.value
+            await session.commit()
+        async with async_session_factory() as session:
+            renewed = await HostService(session).renew_host(
+                uuid.UUID(host_id), expires_at=utc_now() + timedelta(days=7)
+            )
+            renewal["expires_at"] = renewed.expires_at
+
+    monkeypatch.setattr("hosts.service.HostService.provision", renew_mid_provision)
+
+    async with async_session_factory() as session:
+        host = await HostService(session).create_host(env={}, image=None)
+
+    assert host.expires_at == renewal["expires_at"]
+
+
+async def test_create_host_explicit_null_expires_at_creates_permanent_host(client, monkeypatch):
+    # expires_at: null is the caller's deliberate opt-in to a host with no
+    # expiry — permanence must be a choice, never an accident.
+    monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+
+    response = await client.post(
+        "/hosts",
+        headers={"Authorization": "Bearer service-token"},
+        json={"expires_at": None},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["expires_at"] is None
+
+    async with async_session_factory() as session:
+        host = await session.get(Host, uuid.UUID(response.json()["id"]))
+        assert host is not None
+        assert host.expires_at is None
 
 
 async def test_create_host_rejects_oversized_idempotency_key(client):
@@ -832,6 +920,9 @@ async def create_host_record(
     env: dict[str, str] | None = None,
     image: str | None = None,
     tailscale_device_id: str | None = None,
+    expires_at: datetime | None = None,
+    claimed_at: datetime | None = None,
+    pool_member: bool = False,
 ) -> Host:
     now = utc_now()
     settings = get_settings()
@@ -852,12 +943,190 @@ async def create_host_record(
         env=env or {},
         created_at=now,
         updated_at=now,
+        expires_at=expires_at,
+        claimed_at=claimed_at,
+        pool_member=pool_member,
     )
     async with async_session_factory() as session:
         session.add(host)
         await session.commit()
         await session.refresh(host)
     return host
+
+
+async def test_renew_host_with_empty_body_extends_by_default_ttl(client):
+    # Keepalive: an empty renew body bumps the lease to now + LEASE_DEFAULT_TTL.
+    # The host here is demand-provisioned (pool_member=False, claimed_at NULL),
+    # pinning that unclaimed non-pool hosts stay renewable by their caller.
+    host = await create_host_record(
+        name="lb-renew-default",
+        status=HostStatus.ACTIVE.value,
+        expires_at=utc_now() + timedelta(minutes=5),
+    )
+    ttl = timedelta(seconds=get_settings().lease_default_ttl)
+
+    before = utc_now()
+    response = await client.post(
+        f"/hosts/{host.id}/renew",
+        headers={"Authorization": "Bearer service-token"},
+    )
+    after = utc_now()
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(host.id)
+    expires_at = datetime.fromisoformat(response.json()["expires_at"])
+    assert before + ttl <= expires_at <= after + ttl
+
+
+async def test_renew_host_accepts_explicit_expires_at(client):
+    host = await create_host_record(
+        name="lb-renew-explicit",
+        status=HostStatus.ACTIVE.value,
+        expires_at=utc_now() + timedelta(hours=1),
+    )
+    requested = utc_now() + timedelta(days=30)
+
+    response = await client.post(
+        f"/hosts/{host.id}/renew",
+        headers={"Authorization": "Bearer service-token"},
+        json={"expires_at": requested.isoformat()},
+    )
+
+    assert response.status_code == 200
+    renewed = datetime.fromisoformat(response.json()["expires_at"])
+    assert abs((renewed - requested).total_seconds()) < 1
+
+
+async def test_renew_host_renews_bootstrapping_host(client):
+    # A host still waiting on device discovery / keyscan is already caller-owned;
+    # its keepalive must not 409 just because activation hasn't finished.
+    host = await create_host_record(
+        name="lb-renew-boot",
+        status=HostStatus.BOOTSTRAPPING.value,
+        expires_at=utc_now() + timedelta(minutes=5),
+    )
+
+    response = await client.post(
+        f"/hosts/{host.id}/renew",
+        headers={"Authorization": "Bearer service-token"},
+    )
+
+    assert response.status_code == 200
+    assert datetime.fromisoformat(response.json()["expires_at"]) > utc_now()
+
+
+async def test_renew_host_rejects_non_renewable_statuses(client):
+    for index, host_status in enumerate(
+        (
+            HostStatus.PROVISIONING.value,
+            HostStatus.CREATING_NETWORK.value,
+            HostStatus.CREATING_VM.value,
+            HostStatus.ERROR.value,
+        ),
+        start=1,
+    ):
+        host = await create_host_record(name=f"lb-renew-blocked-{index}", status=host_status)
+
+        response = await client.post(
+            f"/hosts/{host.id}/renew",
+            headers={"Authorization": "Bearer service-token"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error_code"] == "HOST_STATE"
+
+
+async def test_renew_host_rejects_unclaimed_pool_host(client):
+    # Warm pool members are managed by pool maintenance; a caller may only
+    # renew a host it owns (claimed, or demand-provisioned).
+    host = await create_host_record(
+        name="lb-renew-pool",
+        status=HostStatus.ACTIVE.value,
+        pool_member=True,
+        expires_at=utc_now() + timedelta(hours=4),
+    )
+
+    response = await client.post(
+        f"/hosts/{host.id}/renew",
+        headers={"Authorization": "Bearer service-token"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "HOST_STATE"
+
+    async with async_session_factory() as session:
+        persisted = await session.get(Host, host.id)
+        assert persisted is not None
+        assert persisted.expires_at == host.expires_at
+
+
+async def test_renew_host_allows_claimed_pool_host(client):
+    host = await create_host_record(
+        name="lb-renew-claimed",
+        status=HostStatus.ACTIVE.value,
+        pool_member=True,
+        claimed_at=utc_now(),
+        expires_at=utc_now() + timedelta(hours=4),
+    )
+
+    response = await client.post(
+        f"/hosts/{host.id}/renew",
+        headers={"Authorization": "Bearer service-token"},
+    )
+
+    assert response.status_code == 200
+
+
+async def test_renew_host_returns_404_for_missing_host(client):
+    response = await client.post(
+        f"/hosts/{uuid.uuid4()}/renew",
+        headers={"Authorization": "Bearer service-token"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "host not found"
+
+
+async def test_renew_host_rejects_past_expires_at(client):
+    host = await create_host_record(name="lb-renew-past", status=HostStatus.ACTIVE.value)
+
+    response = await client.post(
+        f"/hosts/{host.id}/renew",
+        headers={"Authorization": "Bearer service-token"},
+        json={"expires_at": "2020-01-01T12:00:00+00:00"},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["body", "expires_at"]
+    assert "in the future" in detail[0]["msg"]
+
+
+async def test_renew_host_rejects_naive_expires_at(client):
+    host = await create_host_record(name="lb-renew-naive", status=HostStatus.ACTIVE.value)
+
+    response = await client.post(
+        f"/hosts/{host.id}/renew",
+        headers={"Authorization": "Bearer service-token"},
+        json={"expires_at": "2099-01-01T12:00:00"},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["body", "expires_at"]
+
+
+async def test_renew_host_rejects_missing_or_bad_service_auth(client):
+    host_id = uuid.uuid4()
+
+    missing_response = await client.post(f"/hosts/{host_id}/renew")
+    bad_response = await client.post(
+        f"/hosts/{host_id}/renew",
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+
+    assert missing_response.status_code == 401
+    assert bad_response.status_code == 403
 
 
 async def test_delete_host_maps_database_failure_to_503(client, monkeypatch):

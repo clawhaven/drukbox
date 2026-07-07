@@ -93,6 +93,15 @@ successful key returns the original host instead of a duplicate.
 Caller `env` is stored for provisioning and never returned by the API;
 keys in `hosts.schemas.RESERVED_HOST_ENV_KEYS` are rejected.
 
+Every host is a renewable lease. A create without `expires_at` gets
+`now + LEASE_DEFAULT_TTL`, so a host whose owner disappears lapses and
+self-reaps instead of leaking VM cost; an explicit `expires_at: null`
+is the deliberate opt-in to a permanent host. `POST /hosts/{id}/renew`
+is the keepalive: it bumps `expires_at` to the requested instant, or by
+`LEASE_DEFAULT_TTL` from now when the body is empty. Only caller-owned
+hosts renew — unclaimed warm-pool members belong to pool maintenance
+and refuse with `409`.
+
 Two maintenance commands run as cron jobs from the same image:
 `hosts.janitor` reaps expired and orphaned hosts, `hosts.pool` keeps a
 warm pool of pre-provisioned hosts per provider (`POOL_SIZES`, with

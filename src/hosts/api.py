@@ -9,7 +9,7 @@ from hosts.auth import require_service_auth
 from hosts.deps import get_host_service
 from hosts.exceptions import HostTeardownError
 from hosts.models import Host
-from hosts.schemas import HostCreate, HostOut
+from hosts.schemas import HostCreate, HostOut, HostRenew
 from hosts.service import HostService
 from networking.tailscale import NetworkError
 from providers.exceptions import ProviderError, UnknownProviderError
@@ -46,12 +46,15 @@ async def create_host(
     ] = None,
 ) -> Host:
     host_create = payload or HostCreate()
+    # An omitted expires_at gets the default lease; an explicit null is the
+    # caller's deliberate opt-in to a permanent host.
+    expires_at = host_create.expires_at if "expires_at" in host_create.model_fields_set else ...
 
     try:
         return await service.get_or_create_host(
             env=host_create.env,
             image=host_create.image,
-            expires_at=host_create.expires_at,
+            expires_at=expires_at,
             idempotency_key=idempotency_key,
             provider=host_create.provider,
         )
@@ -83,6 +86,20 @@ async def get_host(host_id: uuid.UUID, service: HostServiceDep) -> Host:
     if host := await service.get_host(host_id):
         return host
     raise HTTPException(status_code=404, detail="host not found")
+
+
+@router.post(
+    "/{host_id}/renew",
+    response_model=HostOut,
+    dependencies=[Depends(require_service_auth)],
+)
+async def renew_host(
+    host_id: uuid.UUID,
+    service: HostServiceDep,
+    payload: HostRenew | None = None,
+) -> Host:
+    host_renew = payload or HostRenew()
+    return await service.renew_host(host_id, expires_at=host_renew.expires_at)
 
 
 @router.delete(

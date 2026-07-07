@@ -131,6 +131,14 @@ The effective host image is captured on the host record at creation time. If
 `POST /hosts` omits `image`, store `EXE_DEFAULT_IMAGE`; provisioning must use the
 stored `host.image`, not the current runtime default.
 
+Every host is a renewable lease. `POST /hosts` without `expires_at` stores
+`now + LEASE_DEFAULT_TTL`; an explicit `expires_at: null` is the deliberate
+opt-in to a permanent host. `POST /hosts/{id}/renew` bumps `expires_at` — to
+the given future instant, or by `LEASE_DEFAULT_TTL` from now on an empty body.
+Only `active` and `bootstrapping` hosts renew, and unclaimed pool members
+refuse with `409` (pool maintenance owns them). The janitor reaps hosts whose
+`expires_at` has passed.
+
 ### Delete Semantics
 
 `DELETE /hosts/{id}` is service-token only.

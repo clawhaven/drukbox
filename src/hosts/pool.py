@@ -141,8 +141,8 @@ async def _maintain(
         try:
             async with async_session_factory() as session:
                 service = HostService(session, settings=settings, tailscale=tailscale)
-                await service.delete_host(host_id, pool_shed=True)
-                removed_excess += 1
+                if await service.delete_host(host_id, pool_shed=True):
+                    removed_excess += 1
         except Exception:
             log.exception("pool: failed to shed excess pool host_id=%s", host_id)
 
