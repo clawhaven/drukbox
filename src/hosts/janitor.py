@@ -41,7 +41,7 @@ async def reap_expired_hosts() -> list[uuid.UUID]:
         for host_id in expired_ids:
             try:
                 async with async_session_factory() as session:
-                    await HostService(session, tailscale=tailscale).delete_host(
+                    deleted = await HostService(session, tailscale=tailscale).delete_host(
                         host_id, force=True, expired_only=True
                     )
             except ResourceNotFoundError:
@@ -51,6 +51,9 @@ async def reap_expired_hosts() -> list[uuid.UUID]:
                 log.exception("janitor: failed to reap expired host: host_id=%s", host_id)
                 continue
             else:
+                if not deleted:
+                    # Renewed between selection and the locked delete — spared.
+                    continue
                 log.info("janitor: reaped expired host: host_id=%s", host_id)
                 reaped.append(host_id)
     finally:

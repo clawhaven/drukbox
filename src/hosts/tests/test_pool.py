@@ -509,8 +509,9 @@ async def test_pool_shed_skips_a_host_claimed_in_the_race(pooled_settings, monke
 
     async with async_session_factory() as session:
         service = HostService(session, settings=pooled_settings)
-        await service.delete_host(claimed.id, pool_shed=True)
+        deleted = await service.delete_host(claimed.id, pool_shed=True)
 
+    assert not deleted
     delete_vm.assert_not_awaited()
     async with async_session_factory() as session:
         assert await session.get(Host, claimed.id) is not None

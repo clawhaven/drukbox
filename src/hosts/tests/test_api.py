@@ -223,6 +223,32 @@ async def test_create_host_defaults_expires_at_to_lease_ttl(client, monkeypatch)
     assert before + ttl <= expires_at <= after + ttl
 
 
+async def test_create_host_keeps_safety_ttl_while_provisioning(monkeypatch):
+    # The in-flight row carries the short provisioning-grace TTL, not the full
+    # default lease, so an abandoned provision reaps after the grace window;
+    # the lease itself is stamped once the host is usable.
+    inflight = {}
+
+    async def capture_inflight_expiry(self, host_id):
+        async with async_session_factory() as session:
+            row = await session.get(Host, uuid.UUID(host_id))
+            assert row is not None
+            inflight["expires_at"] = row.expires_at
+
+    monkeypatch.setattr("hosts.service.HostService.provision", capture_inflight_expiry)
+    grace = timedelta(seconds=get_settings().provisioning_grace_seconds)
+    ttl = timedelta(seconds=get_settings().lease_default_ttl)
+
+    async with async_session_factory() as session:
+        before = utc_now()
+        host = await HostService(session).create_host(env={}, image=None)
+        after = utc_now()
+
+    assert before + grace <= inflight["expires_at"] <= after + grace
+    assert host.expires_at is not None
+    assert before + ttl <= host.expires_at <= after + ttl
+
+
 async def test_create_host_explicit_null_expires_at_creates_permanent_host(client, monkeypatch):
     # expires_at: null is the caller's deliberate opt-in to a host with no
     # expiry — permanence must be a choice, never an accident.

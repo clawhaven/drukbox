@@ -95,10 +95,10 @@ class HostService:
         provider: str | None = None,
     ) -> Host:
         # ``...`` (omitted) means "default lease"; an explicit None is the
-        # caller's deliberate opt-in to a permanent, never-reaped host.
-        if expires_at is ...:
-            expires_at = self._default_lease_expires_at()
-
+        # caller's deliberate opt-in to a permanent, never-reaped host. The
+        # sentinel travels to the point where a lease is actually stamped
+        # (pool claim, or the post-provision rewrite) so the in-flight row
+        # keeps the short provisioning safety TTL.
         if provider:
             registered = get_provider_names()
             if provider not in registered:
@@ -139,7 +139,7 @@ class HostService:
         return host
 
     async def _try_claim_pool_host(
-        self, *, provider: str, expires_at: datetime | None
+        self, *, provider: str, expires_at: datetime | None | EllipsisType
     ) -> Host | None:
         # Pick a candidate, then atomically claim it with UPDATE ... WHERE
         # claimed_at IS NULL ... RETURNING. The WHERE predicate is the actual
@@ -163,6 +163,8 @@ class HostService:
         if candidate_id is None:
             return None
 
+        if expires_at is ...:
+            expires_at = self._default_lease_expires_at()
         # The claim replaces the warm-pool max-age TTL with the caller's lease:
         # a concrete window (explicit or the default), or None for a caller
         # who deliberately opted into a permanent host.
@@ -193,8 +195,6 @@ class HostService:
         # Always provisions a brand-new VM; the pool maintainer calls this
         # directly (with pool_member=True) so it never recursively claims its
         # own pool members.
-        if expires_at is ...:
-            expires_at = self._default_lease_expires_at()
         vm = get_vm_provider(provider)
         uid = uuid7()
         name = Host.build_name(uid)
@@ -202,9 +202,15 @@ class HostService:
         host_image = image or vm.default_image
         # Safety TTL covers the strand window: if the client disconnects
         # mid-provision, this is what makes the janitor reap the row + VM.
-        # Replaced with the caller's value after provisioning succeeds.
+        # Replaced with the caller's value after provisioning succeeds. A
+        # default-lease create keeps just the safety TTL in flight — the
+        # lease is stamped only once the host is usable.
         safety_expires_at = now + timedelta(seconds=self.settings.provisioning_grace_seconds)
-        initial_expires_at = max(expires_at, safety_expires_at) if expires_at else safety_expires_at
+        initial_expires_at = (
+            max(expires_at, safety_expires_at)
+            if isinstance(expires_at, datetime)
+            else safety_expires_at
+        )
         host = Host(
             id=uid,
             env=env,
@@ -231,6 +237,8 @@ class HostService:
         # in a dedicated session so we don't extend ``self.session``'s
         # transaction (which can perturb advisory-lock-bearing callers like
         # the pool maintainer).
+        if expires_at is ...:
+            expires_at = self._default_lease_expires_at()
         async with async_session_factory() as ttl_session:
             fresh = await ttl_session.get(Host, host.id)
             if fresh is not None:
@@ -346,7 +354,8 @@ class HostService:
         force: bool = False,
         pool_shed: bool = False,
         expired_only: bool = False,
-    ) -> None:
+    ) -> bool:
+        """Delete the host; return False when a maintenance guard spared it."""
         host = await self.get_host_for_update(host_id)
 
         if host is None:
@@ -355,12 +364,12 @@ class HostService:
         if pool_shed and host.claimed_at:
             # A caller claimed this host between the maintainer selecting it as
             # excess and this locked read — leave it for its owner, don't reap it.
-            return
+            return False
 
         if expired_only and (not host.expires_at or host.expires_at > utc_now()):
             # The owner renewed this host between the janitor selecting it as
             # expired and this locked read — the lease is live again, spare it.
-            return
+            return False
 
         if not force and host.status in DELETE_BLOCKED_STATUSES:
             raise HostStateError("host is still provisioning")
@@ -395,6 +404,7 @@ class HostService:
                 )
         await self.session.delete(host)
         await self.session.commit()
+        return True
 
     async def provision(self, host_id: str) -> None:
         host = await self.get_host(uuid.UUID(host_id))

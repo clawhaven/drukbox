@@ -139,8 +139,38 @@ async def test_janitor_delete_skips_a_host_renewed_in_the_race(monkeypatch):
         await HostService(session).renew_host(host.id)
 
     async with async_session_factory() as session:
-        await HostService(session).delete_host(host.id, force=True, expired_only=True)
+        deleted = await HostService(session).delete_host(host.id, force=True, expired_only=True)
 
+    assert not deleted
+    delete_vm.assert_not_awaited()
+    async with async_session_factory() as session:
+        assert await session.get(Host, host.id) is not None
+
+
+async def test_reap_does_not_report_a_host_renewed_in_the_race(monkeypatch):
+    # End-to-end reporting under the renewal race: the janitor selected the id
+    # as expired, the owner's renewal lands before the locked delete — the
+    # host survives and must not be logged or returned as reaped.
+    delete_vm = AsyncMock()
+    monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", delete_vm)
+
+    real_delete_host = HostService.delete_host
+
+    async def renew_then_delete(self, host_id, **kwargs):
+        async with async_session_factory() as session:
+            await HostService(session).renew_host(host_id)
+        return await real_delete_host(self, host_id, **kwargs)
+
+    monkeypatch.setattr("hosts.service.HostService.delete_host", renew_then_delete)
+    host = await _create_host(
+        name="lb-sandbox-race-report",
+        status=HostStatus.ACTIVE.value,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    reaped = await reap_expired_hosts()
+
+    assert reaped == []
     delete_vm.assert_not_awaited()
     async with async_session_factory() as session:
         assert await session.get(Host, host.id) is not None
