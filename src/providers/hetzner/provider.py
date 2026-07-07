@@ -16,7 +16,7 @@ class HetznerProvider(VMProvider):
     diagnose_hint: ClassVar[str] = "check_hetzner_api_token_and_location"
     # instance_type maps onto Hetzner's server type; root disk size is fixed
     # by the server type, so disk_gb stays unsupported.
-    supports_instance_type: ClassVar[bool] = True
+    supports_instance_type = True
 
     def __init__(
         self,

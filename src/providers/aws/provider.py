@@ -23,8 +23,8 @@ _MANAGED_SG_DESCRIPTION = "SSH ingress for drukbox-managed sandbox VMs."
 class AWSProvider(VMProvider):
     name: ClassVar[str] = "aws"
     diagnose_hint: ClassVar[str] = "check_aws_credentials_and_region"
-    supports_instance_type: ClassVar[bool] = True
-    supports_disk_gb: ClassVar[bool] = True
+    supports_instance_type = True
+    supports_disk_gb = True
 
     def __init__(
         self,
