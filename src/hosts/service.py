@@ -236,15 +236,19 @@ class HostService:
         # Provisioning won: replace the safety TTL with the caller's intent
         # in a dedicated session so we don't extend ``self.session``'s
         # transaction (which can perturb advisory-lock-bearing callers like
-        # the pool maintainer).
+        # the pool maintainer). Guarded on the in-flight value: a renewal
+        # that landed while the host was bootstrapping is newer intent and
+        # must not be clobbered.
         if expires_at is ...:
             expires_at = self._default_lease_expires_at()
         async with async_session_factory() as ttl_session:
-            fresh = await ttl_session.get(Host, host.id)
-            if fresh is not None:
-                fresh.expires_at = expires_at
-                fresh.updated_at = utc_now()
-                await ttl_session.commit()
+            await ttl_session.execute(
+                update(Host)
+                .where(Host.id == host.id)
+                .where(Host.expires_at == initial_expires_at)
+                .values(expires_at=expires_at, updated_at=utc_now())
+            )
+            await ttl_session.commit()
         await self.session.refresh(host)
         return host
 

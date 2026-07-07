@@ -249,6 +249,32 @@ async def test_create_host_keeps_safety_ttl_while_provisioning(monkeypatch):
     assert before + ttl <= host.expires_at <= after + ttl
 
 
+async def test_create_host_preserves_renewal_made_during_provisioning(monkeypatch):
+    # A client whose POST timed out can find the bootstrapping row and renew
+    # it; the create's post-provision TTL rewrite must not clobber that newer
+    # lease when provisioning finishes.
+    renewal = {}
+
+    async def renew_mid_provision(self, host_id):
+        async with async_session_factory() as session:
+            row = await session.get(Host, uuid.UUID(host_id))
+            assert row is not None
+            row.status = HostStatus.BOOTSTRAPPING.value
+            await session.commit()
+        async with async_session_factory() as session:
+            renewed = await HostService(session).renew_host(
+                uuid.UUID(host_id), expires_at=utc_now() + timedelta(days=7)
+            )
+            renewal["expires_at"] = renewed.expires_at
+
+    monkeypatch.setattr("hosts.service.HostService.provision", renew_mid_provision)
+
+    async with async_session_factory() as session:
+        host = await HostService(session).create_host(env={}, image=None)
+
+    assert host.expires_at == renewal["expires_at"]
+
+
 async def test_create_host_explicit_null_expires_at_creates_permanent_host(client, monkeypatch):
     # expires_at: null is the caller's deliberate opt-in to a host with no
     # expiry — permanence must be a choice, never an accident.

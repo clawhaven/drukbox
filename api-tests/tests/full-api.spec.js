@@ -16,6 +16,7 @@ const EXPECTED_OPENAPI_OPERATIONS = [
   "POST /http-proxies",
   "POST /http-proxies/{name}/hosts/{host_id}",
   "POST /hosts",
+  "POST /hosts/{host_id}/renew",
 ];
 
 const HOST_KEYS = [
@@ -246,6 +247,20 @@ test.describe("Drukbox API", () => {
     await expectStatus(await api.delete(`/http-proxies/${createdProxyName}`), 204);
 
     createdProxyName = null;
+  });
+
+  test("POST /hosts/{host_id}/renew extends the host lease", async () => {
+    await expectStatus(await publicApi.post(`/hosts/${createdHost.id}/renew`), 401);
+    await expectStatus(await badTokenApi.post(`/hosts/${createdHost.id}/renew`), 403);
+
+    const renewed = await expectJson(await api.post(`/hosts/${createdHost.id}/renew`), 200);
+    expectHost(renewed);
+    expect(renewed.id).toBe(createdHost.id);
+    expect(Date.parse(renewed.expires_at)).toBeGreaterThan(Date.now());
+
+    const missingId = "00000000-0000-0000-0000-000000000000";
+    const missing = await expectJson(await api.post(`/hosts/${missingId}/renew`), 404);
+    expect(missing.detail).toBe("host not found");
   });
 
   test("DELETE /hosts/{host_id} tears down the created host", async () => {
