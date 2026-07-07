@@ -380,8 +380,43 @@ async def test_maintain_pool_caps_total_creates_across_providers(monkeypatch, st
 
         assert summary.created == 3
         assert provision.await_count == 3
-        # The budget round-robins across providers instead of filling one first.
-        assert await _pool_counts_by_provider() == {"exe": 2, "stub": 1}
+        # The budget round-robins across providers instead of filling one
+        # first: two providers under a cap of 3 split 2/1, in an order that
+        # is shuffled per tick.
+        counts = await _pool_counts_by_provider()
+        assert set(counts) == {"exe", "stub"}
+        assert sorted(counts.values()) == [1, 2]
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_maintain_pool_reaches_other_providers_when_one_keeps_failing(
+    monkeypatch, stub_provider
+):
+    # With a per-tick cap of 1 and exe's creates permanently failing, a fixed
+    # top-up order would retry exe every tick and never warm stub. The
+    # per-tick shuffle must reach stub across ticks (the odds of 50 shuffles
+    # all leading with exe are 2**-50).
+    monkeypatch.setenv("POOL_SIZES", '{"exe": 2, "stub": 1}')
+    monkeypatch.delenv("POOL_SIZE", raising=False)
+    monkeypatch.setenv("POOL_MAX_CREATES_PER_TICK", "1")
+    get_settings.cache_clear()
+    try:
+        monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+        real_create_host = HostService.create_host
+
+        async def create_host_with_exe_down(self, **kwargs):
+            if kwargs.get("provider") == "exe":
+                raise RuntimeError("exe provider down")
+            return await real_create_host(self, **kwargs)
+
+        monkeypatch.setattr("hosts.service.HostService.create_host", create_host_with_exe_down)
+
+        for _ in range(50):
+            await maintain_pool()
+            if await _pool_counts_by_provider() == {"stub": 1}:
+                break
+        assert await _pool_counts_by_provider() == {"stub": 1}
     finally:
         get_settings.cache_clear()
 

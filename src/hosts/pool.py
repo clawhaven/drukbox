@@ -1,4 +1,5 @@
 import logging
+import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -89,13 +90,16 @@ async def _maintain(
                 ).scalars()
             )
 
-    deficits = {
-        provider: target - current.get(provider, 0)
-        for provider, target in sorted(targets.items())
-        if target > current.get(provider, 0)
-    }
-    # Round-robin the global per-tick budget across providers so one large
-    # deficit can't starve the others.
+    underfilled = [
+        provider for provider, target in targets.items() if target > current.get(provider, 0)
+    ]
+    # Spread the per-tick budget round-robin across providers so one large
+    # deficit can't starve the others. The order is shuffled each tick: with
+    # no cross-tick state, a fixed order would starve the last provider
+    # whenever the cap is smaller than the number of underfilled providers —
+    # permanently so when an earlier provider's creates keep failing.
+    random.shuffle(underfilled)
+    deficits = {provider: targets[provider] - current.get(provider, 0) for provider in underfilled}
     batch: list[str] = []
     while deficits and len(batch) < settings.pool_max_creates_per_tick:
         for provider in list(deficits):
