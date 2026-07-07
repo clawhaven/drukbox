@@ -68,6 +68,25 @@ async def test_create_server_posts_body_and_returns_id(respx_mock):
 
 @pytest.mark.asyncio
 @respx.mock(base_url=BASE_URL)
+async def test_create_server_prefers_explicit_server_type(respx_mock):
+    route = respx_mock.post("/servers").mock(
+        return_value=httpx.Response(201, json={"server": {"id": 1}}),
+    )
+
+    await _api().create_server(
+        name="sb",
+        image="ubuntu-24.04",
+        ssh_key_name="k",
+        user_data="",
+        labels={},
+        server_type="cx33",
+    )
+
+    assert b'"server_type":"cx33"' in route.calls.last.request.read()
+
+
+@pytest.mark.asyncio
+@respx.mock(base_url=BASE_URL)
 async def test_create_server_omits_user_data_when_empty(respx_mock):
     route = respx_mock.post("/servers").mock(
         return_value=httpx.Response(201, json={"server": {"id": 1}}),

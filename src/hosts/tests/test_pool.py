@@ -208,6 +208,32 @@ async def test_create_host_never_claims_another_providers_pool_member(
     mocked_provision.assert_awaited_once()
 
 
+async def test_create_host_skips_pool_when_sized(multi_pool_settings, monkeypatch, stub_provider):
+    # Pool members are warmed at the provider's default size, so a sized
+    # request must provision fresh even when its provider has a warm host.
+    pool_host = await _seed_pool_host(name="lb-pool-stub", provider="stub")
+    mocked_provision = AsyncMock()
+    monkeypatch.setattr("hosts.service.HostService.provision", mocked_provision)
+
+    for instance_type, disk_gb in (("stub-large", None), (None, 200)):
+        async with async_session_factory() as session:
+            service = HostService(session, settings=multi_pool_settings)
+            result = await service.get_or_create_host(
+                env={},
+                image=None,
+                provider="stub",
+                instance_type=instance_type,
+                disk_gb=disk_gb,
+            )
+
+        assert result.id != pool_host.id
+        assert result.claimed_at is None
+        assert result.instance_type == instance_type
+        assert result.disk_gb == disk_gb
+
+    assert mocked_provision.await_count == 2
+
+
 async def test_create_host_skips_pool_when_image_override(pooled_settings, monkeypatch):
     await _seed_pool_host(name="lb-pool-1")
     mocked_provision = AsyncMock()

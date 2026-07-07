@@ -75,6 +75,10 @@ class Host(Base):
     status: Mapped[str] = mapped_column(String(32), default=HostStatus.PROVISIONING.value)
     provider: Mapped[str] = mapped_column(String(20), default="exe")
     image: Mapped[str] = mapped_column(Text)
+    # Per-request sizing, provider-native values (EC2 instance type, Hetzner
+    # server type). NULL means the provider's configured default size.
+    instance_type: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    disk_gb: Mapped[int | None] = mapped_column(nullable=True, default=None)
     # Reachable SSH addresses. Both populated when Tailscale is enabled
     # (internal = MagicDNS name, external = provider-given address); only
     # external_ssh_host is populated when Tailscale is disabled. The

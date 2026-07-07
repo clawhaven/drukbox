@@ -33,6 +33,8 @@ class StubVMProvider(VMProvider):
         image: str,
         env: dict[str, str] | None = None,
         setup_script: str | None = None,
+        instance_type: str | None = None,
+        disk_gb: int | None = None,
     ) -> VMCreateResult:
         return VMCreateResult(provider_id=name, name=name, ssh_port=22, ssh_username="stub")
 

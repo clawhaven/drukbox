@@ -52,6 +52,7 @@ async def test_create_vm_with_tailscale_on_skips_keypair_sg_and_public_ip():
     assert kwargs["security_group_id"] is None
     assert kwargs["tags"]["managed-by"] == "drukbox"
     assert kwargs["client_token"] == "sb-test"
+    assert kwargs["instance_type"] == "t3.medium"
     assert kwargs["root_gb"] == 100
     assert result.private_key is None
     assert result.ssh_host == ""
@@ -251,6 +252,25 @@ async def test_create_vm_passes_custom_root_gb_to_run_instance():
 
     await provider.create_vm(name="sb-test", image="ami-deadbeef", env={}, setup_script="echo hi")
     assert api.run_instance.await_args.kwargs["root_gb"] == 250
+
+
+@pytest.mark.asyncio
+async def test_create_vm_honors_per_request_sizing_over_settings():
+    api = _api_mock()
+    provider = AWSProvider(api, _settings(), tailscale_enabled=True)
+
+    await provider.create_vm(
+        name="sb-test",
+        image="ami-deadbeef",
+        env={},
+        setup_script="echo hi",
+        instance_type="t3.xlarge",
+        disk_gb=250,
+    )
+
+    kwargs = api.run_instance.await_args.kwargs
+    assert kwargs["instance_type"] == "t3.xlarge"
+    assert kwargs["root_gb"] == 250
 
 
 @pytest.mark.asyncio

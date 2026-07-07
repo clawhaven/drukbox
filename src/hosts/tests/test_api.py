@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
+from sqlalchemy import func, select
 from uuid6 import uuid7
 
 from core.database import async_session_factory
@@ -539,6 +540,74 @@ async def test_create_host_idempotency_key_expired_creates_new_host(client, monk
     assert response.status_code == 201
     # New host was created, not the stale one.
     assert response.json()["id"] != str(seed_host.id)
+
+
+async def test_create_host_stores_and_returns_sizing(client, monkeypatch, stub_provider):
+    """A sized request lands on the row and is reflected by both POST and GET."""
+    monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+
+    response = await client.post(
+        "/hosts",
+        headers={"Authorization": "Bearer service-token"},
+        json={"provider": "stub", "instance_type": "stub-large", "disk_gb": 200},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["instance_type"] == "stub-large"
+    assert payload["disk_gb"] == 200
+
+    fetched = await client.get(
+        f"/hosts/{payload['id']}",
+        headers={"Authorization": "Bearer service-token"},
+    )
+
+    assert fetched.status_code == 200
+    assert fetched.json()["instance_type"] == "stub-large"
+    assert fetched.json()["disk_gb"] == 200
+
+
+async def test_create_host_without_sizing_reflects_null(client, monkeypatch):
+    """Omitted sizing means the provider's configured default, surfaced as null."""
+    monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+
+    response = await client.post("/hosts", headers={"Authorization": "Bearer service-token"})
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["instance_type"] is None
+    assert payload["disk_gb"] is None
+
+
+async def test_create_host_rejects_sizing_the_provider_does_not_support(client):
+    """exe exposes no per-request sizing; the request 400s before any row exists."""
+    for field, value in (("instance_type", "t3.xlarge"), ("disk_gb", 200)):
+        response = await client.post(
+            "/hosts",
+            headers={"Authorization": "Bearer service-token"},
+            json={field: value},
+        )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "'exe'" in detail
+        assert field in detail
+
+    async with async_session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Host)) == 0
+
+
+async def test_create_host_rejects_blank_instance_type(client):
+    response = await client.post(
+        "/hosts",
+        headers={"Authorization": "Bearer service-token"},
+        json={"instance_type": "   "},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["body", "instance_type"]
+    assert "instance_type must not be blank" in detail[0]["msg"]
 
 
 async def test_create_host_rejects_blank_image(client):

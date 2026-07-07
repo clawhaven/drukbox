@@ -59,6 +59,22 @@ async def test_create_vm_mints_key_and_returns_public_ip_and_private_key():
 
 
 @pytest.mark.asyncio
+async def test_create_vm_passes_instance_type_as_server_type():
+    api = _api_mock()
+    provider = HetznerProvider(api, _settings())
+
+    await provider.create_vm(
+        name="sb-test",
+        image="ubuntu-24.04",
+        env={},
+        setup_script="echo hi",
+        instance_type="cx33",
+    )
+
+    assert api.create_server.await_args.kwargs["server_type"] == "cx33"
+
+
+@pytest.mark.asyncio
 async def test_create_vm_deletes_key_when_create_server_fails():
     api = _api_mock()
     api.create_server.side_effect = HetznerTransportError("boom")

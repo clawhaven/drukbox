@@ -36,3 +36,7 @@ class UnknownProviderError(ProviderError):
 
 class CapabilityUnsupportedError(ProviderError):
     pass
+
+
+class UnsupportedSizingError(ProviderError):
+    pass

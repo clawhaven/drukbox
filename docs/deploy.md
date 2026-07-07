@@ -175,8 +175,8 @@ AWS provider:
 | --- | --- | --- |
 | `AWS_REGION` | — (required) | Region for the EC2 client and launches. |
 | `AWS_DEFAULT_IMAGE` | — (required) | AMI id or SSM parameter path used when the caller omits `image`. |
-| `AWS_INSTANCE_TYPE` | `t3.medium` | EC2 instance type. |
-| `AWS_ROOT_GB` | `100` | Root EBS volume size (gp3, encrypted). |
+| `AWS_INSTANCE_TYPE` | `t3.medium` | EC2 instance type when the caller omits `instance_type`. |
+| `AWS_ROOT_GB` | `100` | Root EBS volume size (gp3, encrypted) when the caller omits `disk_gb`. |
 | `AWS_SUBNET_ID` | — | Optional subnet; default VPC's otherwise. |
 | `AWS_SECURITY_GROUP_ID` | — | Pre-existing SG; unset → drukbox manages `drukbox-managed`. |
 | `AWS_SSH_CIDRS` | — | SSH ingress CIDRs. Authoritative when set; unset → detected egress `/32`, falling back to `0.0.0.0/0`. |
@@ -191,7 +191,7 @@ Hetzner provider:
 | `HETZNER_API_TOKEN` | — (required) | Bearer token for the Hetzner Cloud API. |
 | `HETZNER_LOCATION` | — (required) | Location for launches, e.g. `nbg1`, `fsn1`, `hel1`, `ash`. |
 | `HETZNER_DEFAULT_IMAGE` | `ubuntu-24.04` | Image name/id used when the caller omits `image`. |
-| `HETZNER_SERVER_TYPE` | `cx23` | Server type, e.g. `cx23`, `cx33`. Hetzner retires older generations (e.g. `cx22`); a deprecated type fails provisioning with a 422. |
+| `HETZNER_SERVER_TYPE` | `cx23` | Server type when the caller omits `instance_type`, e.g. `cx23`, `cx33`. Hetzner retires older generations (e.g. `cx22`); a deprecated type fails provisioning with a 422. |
 | `HETZNER_API_TIMEOUT` | `30.0` | Timeout for Hetzner API calls. |
 | `HETZNER_BOOTSTRAP_SSH_TIMEOUT_SECONDS` | `120.0` | ssh-keyscan retry budget for a fresh server. |
 | `HETZNER_SSH_USERNAME` | `root` | In-VM user callers SSH as. |
