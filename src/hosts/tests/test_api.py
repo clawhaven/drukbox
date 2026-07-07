@@ -385,7 +385,7 @@ async def test_idempotency_loser_that_claimed_pool_host_is_returned_to_pool(monk
 
     async with async_session_factory() as session:
         service = HostService(session)
-        claimed = await service._try_claim_pool_host(expires_at=None)
+        claimed = await service._try_claim_pool_host(provider="exe", expires_at=None)
         assert claimed is not None
         assert claimed.claimed_at is not None
         await service._release_idempotency_loser(claimed)

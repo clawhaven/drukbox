@@ -96,10 +96,14 @@ class HostService:
                 return existing
 
         host: Host | None = None
-        # Pool hosts are warmed with the default provider, so a pinned provider
-        # always provisions fresh.
-        if self.settings.pool_size > 0 and not env and image is None and not provider:
-            host = await self._try_claim_pool_host(expires_at=expires_at)
+        # Warm hosts are provider-specific, so the claim is scoped to the
+        # requested provider's pool. A request is pool-eligible only when it
+        # doesn't customize the host: default image and no env.
+        requested_provider = provider or self.settings.default_host_provider
+        if not env and image is None and self.settings.get_pool_targets().get(requested_provider):
+            host = await self._try_claim_pool_host(
+                provider=requested_provider, expires_at=expires_at
+            )
         if host is None:
             host = await self.create_host(
                 env=env, image=image, expires_at=expires_at, provider=provider
@@ -119,7 +123,9 @@ class HostService:
             return winner
         return host
 
-    async def _try_claim_pool_host(self, *, expires_at: datetime | None) -> Host | None:
+    async def _try_claim_pool_host(
+        self, *, provider: str, expires_at: datetime | None
+    ) -> Host | None:
         # Pick a candidate, then atomically claim it with UPDATE ... WHERE
         # claimed_at IS NULL ... RETURNING. The WHERE predicate is the actual
         # race guard — concurrent claimants resolve to a single winner per
@@ -130,6 +136,7 @@ class HostService:
         candidate_id = (
             await self.session.execute(
                 select(Host.id)
+                .where(Host.provider == provider)
                 .where(Host.pool_member.is_(True))
                 .where(Host.claimed_at.is_(None))
                 .where(Host.status == HostStatus.ACTIVE.value)

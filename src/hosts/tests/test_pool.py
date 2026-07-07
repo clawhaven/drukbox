@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import func, select
 from uuid6 import uuid7
 
 from core.database import async_session_factory
@@ -15,8 +16,9 @@ from providers.exe.settings import ExeSettings
 
 @pytest.fixture
 def pooled_settings(monkeypatch):
-    """Force the pool to be enabled for this test."""
+    """Force the pool to be enabled for this test, via the POOL_SIZE alias."""
     monkeypatch.setenv("POOL_SIZE", "2")
+    monkeypatch.delenv("POOL_SIZES", raising=False)
     monkeypatch.setenv("POOL_HOST_MAX_AGE_HOURS", "4")
     # Raise the per-tick cap so tests can observe full deficit refills in a
     # single maintain_pool() call. Production defaults to a small cap so that
@@ -27,9 +29,33 @@ def pooled_settings(monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture
+def multi_pool_settings(monkeypatch):
+    """Warm targets for two providers ("exe" and the conftest "stub")."""
+    monkeypatch.setenv("POOL_SIZES", '{"exe": 2, "stub": 1}')
+    monkeypatch.delenv("POOL_SIZE", raising=False)
+    monkeypatch.setenv("POOL_HOST_MAX_AGE_HOURS", "4")
+    monkeypatch.setenv("POOL_MAX_CREATES_PER_TICK", "100")
+    get_settings.cache_clear()
+    yield get_settings()
+    get_settings.cache_clear()
+
+
+async def _pool_counts_by_provider() -> dict[str, int]:
+    async with async_session_factory() as session:
+        counted = await session.execute(
+            select(Host.provider, func.count())
+            .where(Host.pool_member.is_(True))
+            .where(Host.claimed_at.is_(None))
+            .group_by(Host.provider)
+        )
+    return {provider: count for provider, count in counted.all()}
+
+
 async def _seed_pool_host(
     *,
     name: str,
+    provider: str = "exe",
     status: str = HostStatus.ACTIVE.value,
     claimed_at: datetime | None = None,
     expires_at: datetime | None = None,
@@ -41,7 +67,7 @@ async def _seed_pool_host(
         id=uuid7(),
         name=name,
         status=status,
-        provider="exe",
+        provider=provider,
         image=ExeSettings().default_image,  # pyright: ignore[reportCallIssue]
         env=env or {},
         internal_ssh_host=f"{name}.example.ts.net",
@@ -127,11 +153,12 @@ async def test_create_host_skips_pool_when_env_present(pooled_settings, monkeypa
     mocked_provision.assert_awaited_once()
 
 
-async def test_create_host_skips_pool_when_provider_pinned(
+async def test_create_host_skips_pool_when_provider_has_no_target(
     pooled_settings, monkeypatch, stub_provider
 ):
-    # Pool hosts are warmed with the default provider, so a pinned provider
-    # must provision fresh rather than hand back a default-provider member.
+    # POOL_SIZE targets only the default provider, so a request pinned to an
+    # untargeted provider must provision fresh rather than hand back a
+    # default-provider member.
     await _seed_pool_host(name="lb-pool-1")
     mocked_provision = AsyncMock()
     monkeypatch.setattr("hosts.service.HostService.provision", mocked_provision)
@@ -142,6 +169,42 @@ async def test_create_host_skips_pool_when_provider_pinned(
 
     assert result.claimed_at is None
     assert result.provider == "stub"
+    mocked_provision.assert_awaited_once()
+
+
+async def test_create_host_claims_pool_member_of_the_pinned_provider(
+    multi_pool_settings, monkeypatch, stub_provider
+):
+    await _seed_pool_host(name="lb-pool-exe")
+    stub_host = await _seed_pool_host(name="lb-pool-stub", provider="stub")
+    mocked_provision = AsyncMock()
+    monkeypatch.setattr("hosts.service.HostService.provision", mocked_provision)
+
+    async with async_session_factory() as session:
+        service = HostService(session, settings=multi_pool_settings)
+        result = await service.get_or_create_host(env={}, image=None, provider="stub")
+
+    assert result.id == stub_host.id
+    assert result.claimed_at is not None
+    mocked_provision.assert_not_awaited()
+
+
+async def test_create_host_never_claims_another_providers_pool_member(
+    multi_pool_settings, monkeypatch, stub_provider
+):
+    # Only an exe host is warm; a stub request has a pool target but must
+    # provision fresh rather than cross providers.
+    exe_host = await _seed_pool_host(name="lb-pool-exe")
+    mocked_provision = AsyncMock()
+    monkeypatch.setattr("hosts.service.HostService.provision", mocked_provision)
+
+    async with async_session_factory() as session:
+        service = HostService(session, settings=multi_pool_settings)
+        result = await service.get_or_create_host(env={}, image=None, provider="stub")
+
+    assert result.id != exe_host.id
+    assert result.provider == "stub"
+    assert result.claimed_at is None
     mocked_provision.assert_awaited_once()
 
 
@@ -244,11 +307,118 @@ async def test_maintain_pool_sheds_excess_when_pool_size_shrinks(pooled_settings
     assert summary.removed_excess == 3
     assert summary.created == 0
     async with async_session_factory() as session:
-        from sqlalchemy import select as _select
-
-        result = await session.execute(_select(Host).where(Host.claimed_at.is_(None)))
+        result = await session.execute(select(Host).where(Host.claimed_at.is_(None)))
         remaining = list(result.scalars())
     assert len(remaining) == 2
+
+
+async def test_maintain_pool_tops_up_each_provider_toward_its_target(
+    multi_pool_settings, monkeypatch, stub_provider
+):
+    monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+
+    summary = await maintain_pool()
+
+    assert summary.created == 3
+    assert await _pool_counts_by_provider() == {"exe": 2, "stub": 1}
+
+
+async def test_maintain_pool_sheds_excess_per_provider(monkeypatch, stub_provider):
+    # exe is over target while stub is exactly on target; only exe sheds, and
+    # only down to its own target.
+    monkeypatch.setenv("POOL_SIZES", '{"exe": 1, "stub": 2}')
+    monkeypatch.delenv("POOL_SIZE", raising=False)
+    get_settings.cache_clear()
+    try:
+        monkeypatch.setattr("networking.tailscale.Tailscale.release_device", AsyncMock())
+        monkeypatch.setattr("providers.exe.provider.ExeProvider.delete_vm", AsyncMock())
+        for i in range(3):
+            await _seed_pool_host(name=f"lb-exe-{i}")
+        for i in range(2):
+            await _seed_pool_host(name=f"lb-stub-{i}", provider="stub")
+
+        summary = await maintain_pool()
+
+        assert summary.removed_excess == 2
+        assert summary.created == 0
+        assert await _pool_counts_by_provider() == {"exe": 1, "stub": 2}
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_maintain_pool_sheds_provider_dropped_from_targets(monkeypatch, stub_provider):
+    # stub carries no target at all: its warm hosts shed to zero instead of
+    # idling until the max-age TTL, while exe tops up toward its own target.
+    monkeypatch.setenv("POOL_SIZES", '{"exe": 1}')
+    monkeypatch.delenv("POOL_SIZE", raising=False)
+    get_settings.cache_clear()
+    try:
+        monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+        monkeypatch.setattr("networking.tailscale.Tailscale.release_device", AsyncMock())
+        stub_host = await _seed_pool_host(name="lb-stub-0", provider="stub")
+
+        summary = await maintain_pool()
+
+        assert summary.removed_excess == 1
+        assert summary.created == 1
+        assert stub_provider.deleted == [stub_host.name]
+        assert await _pool_counts_by_provider() == {"exe": 1}
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_maintain_pool_caps_total_creates_across_providers(monkeypatch, stub_provider):
+    monkeypatch.setenv("POOL_SIZES", '{"exe": 5, "stub": 5}')
+    monkeypatch.delenv("POOL_SIZE", raising=False)
+    monkeypatch.setenv("POOL_MAX_CREATES_PER_TICK", "3")
+    get_settings.cache_clear()
+    try:
+        provision = AsyncMock()
+        monkeypatch.setattr("hosts.service.HostService.provision", provision)
+
+        summary = await maintain_pool()
+
+        assert summary.created == 3
+        assert provision.await_count == 3
+        # The budget round-robins across providers instead of filling one
+        # first: two providers under a cap of 3 split 2/1, in an order that
+        # is shuffled per tick.
+        counts = await _pool_counts_by_provider()
+        assert set(counts) == {"exe", "stub"}
+        assert sorted(counts.values()) == [1, 2]
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_maintain_pool_reaches_other_providers_when_one_keeps_failing(
+    monkeypatch, stub_provider
+):
+    # With a per-tick cap of 1 and exe's creates permanently failing, a fixed
+    # top-up order would retry exe every tick and never warm stub. The
+    # per-tick shuffle must reach stub across ticks (the odds of 50 shuffles
+    # all leading with exe are 2**-50).
+    monkeypatch.setenv("POOL_SIZES", '{"exe": 2, "stub": 1}')
+    monkeypatch.delenv("POOL_SIZE", raising=False)
+    monkeypatch.setenv("POOL_MAX_CREATES_PER_TICK", "1")
+    get_settings.cache_clear()
+    try:
+        monkeypatch.setattr("hosts.service.HostService.provision", AsyncMock())
+        real_create_host = HostService.create_host
+
+        async def create_host_with_exe_down(self, **kwargs):
+            if kwargs.get("provider") == "exe":
+                raise RuntimeError("exe provider down")
+            return await real_create_host(self, **kwargs)
+
+        monkeypatch.setattr("hosts.service.HostService.create_host", create_host_with_exe_down)
+
+        for _ in range(50):
+            await maintain_pool()
+            if await _pool_counts_by_provider() == {"stub": 1}:
+                break
+        assert await _pool_counts_by_provider() == {"stub": 1}
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_maintain_pool_excludes_expired_hosts_from_count(pooled_settings, monkeypatch):

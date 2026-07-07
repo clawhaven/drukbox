@@ -92,7 +92,8 @@ keys in `hosts.schemas.RESERVED_HOST_ENV_KEYS` are rejected.
 
 Two maintenance commands run as cron jobs from the same image:
 `hosts.janitor` reaps expired and orphaned hosts, `hosts.pool` keeps a
-warm pool of pre-provisioned hosts (`POOL_SIZE`) to hide provider cold
+warm pool of pre-provisioned hosts per provider (`POOL_SIZES`, with
+`POOL_SIZE` as the default provider's target) to hide provider cold
 starts.
 
 ## Diagnostics
