@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 from uuid6 import uuid7
 
 from core.database import async_session_factory
+from core.settings import get_settings
 from hosts.models import Host, HostStatus
 from hosts.service import utc_now
 from providers.exe.settings import ExeSettings
@@ -32,13 +33,8 @@ async def test_create_http_proxy_returns_created(client, monkeypatch):
     )
 
 
-async def test_http_proxy_returns_501_when_provider_lacks_capability(client, monkeypatch):
-    from providers.exceptions import UnknownProviderError
-
-    def _unsupported():
-        raise UnknownProviderError("default VM provider 'docker' does not support http proxies")
-
-    monkeypatch.setattr("http_proxies.service.get_default_http_proxy_capability", _unsupported)
+async def test_http_proxy_returns_501_when_default_provider_lacks_capability(client, monkeypatch):
+    monkeypatch.setattr(get_settings(), "default_host_provider", "docker")
 
     response = await client.post(
         "/http-proxies",
@@ -48,6 +44,22 @@ async def test_http_proxy_returns_501_when_provider_lacks_capability(client, mon
             "target": "https://gmailmcp.googleapis.com",
             "headers": {"Authorization": "Bearer token"},
         },
+    )
+
+    assert response.status_code == 501
+    assert response.json()["error_code"] == "HTTP_PROXY_UNSUPPORTED"
+
+
+async def test_attach_returns_501_when_host_provider_lacks_capability(client):
+    host = await create_host_record(
+        name="lb-sandbox-test",
+        status=HostStatus.ACTIVE.value,
+        provider="docker",
+    )
+
+    response = await client.post(
+        f"/http-proxies/gmail-mcp/hosts/{host.id}",
+        headers={"Authorization": "Bearer service-token"},
     )
 
     assert response.status_code == 501
@@ -242,6 +254,7 @@ async def create_host_record(
     id: uuid.UUID | None = None,
     name: str,
     status: str,
+    provider: str = "exe",
     tailscale_device_id: str | None = None,
 ) -> Host:
     now = utc_now()
@@ -249,7 +262,7 @@ async def create_host_record(
         id=id or uuid7(),
         name=name,
         status=status,
-        provider="exe",
+        provider=provider,
         image=ExeSettings().default_image,  # pyright: ignore[reportCallIssue]
         env={},
         internal_ssh_host=f"{name}.example.ts.net",
