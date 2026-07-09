@@ -41,8 +41,9 @@ to keep the credential-holding control plane off other interfaces.
 
 ## Choose a provider
 
-Three remote providers are supported and verified end to end: `exe`
-(exe.dev), `aws` (EC2), and `hetzner` (Hetzner Cloud). A fourth, `docker`,
+Four remote providers are supported and verified end to end: `exe`
+(exe.dev), `aws` (EC2), `hetzner` (Hetzner Cloud), and `exoscale`
+(Exoscale). A fifth, `docker`,
 runs sandboxes as local containers and needs no external account — see
 [Local sandboxes with Docker](#local-sandboxes-with-docker). `DEFAULT_HOST_PROVIDER`
 selects which one serves `POST /hosts` (default `exe`). Set the matching
@@ -199,6 +200,20 @@ Hetzner provider:
 A fresh Hetzner server has no firewall — port 22 is open and SSH is
 key-only. Drukbox mints a per-VM ed25519 key in both networking modes;
 there is no security-group or ingress-CIDR configuration to manage.
+
+Exoscale provider:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EXOSCALE_API_KEY` | — (required) | Exoscale API key ID. |
+| `EXOSCALE_API_SECRET` | — (required) | Exoscale API secret used to sign requests. |
+| `EXOSCALE_ZONE` | — (required) | Zone for launches, e.g. `ch-gva-2`, `de-fra-1`. |
+| `EXOSCALE_DEFAULT_IMAGE` | `Linux Ubuntu 24.04 LTS 64-bit` | Template used when the caller omits `image`. |
+| `EXOSCALE_INSTANCE_TYPE` | `standard.medium` | Instance type when the caller omits `instance_type`. |
+| `EXOSCALE_DISK_GB` | `50` | Root disk size in GB when the caller omits `disk_gb`. |
+| `EXOSCALE_API_TIMEOUT` | `30.0` | Timeout for Exoscale API calls. |
+| `EXOSCALE_BOOTSTRAP_SSH_TIMEOUT_SECONDS` | `120.0` | ssh-keyscan retry budget for a fresh instance. |
+| `EXOSCALE_SSH_USERNAME` | `ubuntu` | In-VM user callers SSH as. Exoscale Ubuntu templates default to `ubuntu`. |
 
 Docker provider:
 
