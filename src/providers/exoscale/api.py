@@ -98,7 +98,7 @@ class ExoscaleAPI:
             await self._request(
                 "POST",
                 "/ssh-key",
-                json={"name": name, "public-key": public_key, "labels": labels},
+                json={"name": name, "public-key": public_key},
             )
 
     async def delete_ssh_key(self, name: str) -> None:
@@ -151,11 +151,11 @@ class ExoscaleAPI:
             await asyncio.sleep(_RUN_TO_IP_POLL_SECONDS)
 
     async def find_instance_id_by_name(self, name: str) -> str | None:
-        response = await self._request("GET", "/instance", params={"name": name})
-        instances = response["instances"]
-        if not instances:
-            return None
-        return str(instances[0]["id"])
+        response = await self._request("GET", "/instance")
+        for instance in response["instances"]:
+            if instance.get("name") == name:
+                return str(instance["id"])
+        return None
 
     async def delete_instance(self, instance_id: str) -> None:
         try:
@@ -164,8 +164,8 @@ class ExoscaleAPI:
             return
 
     async def list_instances_count(self) -> int:
-        response = await self._request("GET", "/instance", params={"limit": "1"})
-        return int(response["total"])
+        response = await self._request("GET", "/instance")
+        return len(response["instances"])
 
     async def aclose(self) -> None:
         if not self._client:

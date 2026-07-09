@@ -43,7 +43,6 @@ async def test_ensure_ssh_key_creates_when_absent(respx_mock):
     assert body == {
         "name": "drukbox-sb",
         "public-key": "ssh-ed25519 AAAA",
-        "labels": {"managed-by": "drukbox"},
     }
     assert create.calls.last.request.headers["authorization"].startswith(
         "EXO2-HMAC-SHA256 credential="
@@ -171,6 +170,24 @@ async def test_find_instance_id_by_name_returns_none_when_absent(respx_mock):
 
 @pytest.mark.asyncio
 @respx.mock(base_url=BASE_URL)
+async def test_find_instance_id_by_name_returns_id_when_present(respx_mock):
+    respx_mock.get("/instance").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "instances": [
+                    {"id": "i-abc", "name": "sb-found"},
+                    {"id": "i-xyz", "name": "other"},
+                ],
+            },
+        ),
+    )
+
+    assert await _api().find_instance_id_by_name("sb-found") == "i-abc"
+
+
+@pytest.mark.asyncio
+@respx.mock(base_url=BASE_URL)
 async def test_delete_instance_swallows_404(respx_mock):
     respx_mock.delete("/instance/i-7").mock(
         return_value=httpx.Response(404, json={"message": "gone"}),
@@ -212,9 +229,9 @@ async def test_request_maps_404_to_not_found(respx_mock):
 @respx.mock(base_url=BASE_URL)
 async def test_list_instances_count_reads_total(respx_mock):
     respx_mock.get("/instance").mock(
-        return_value=httpx.Response(200, json={"instances": [], "total": 4}),
+        return_value=httpx.Response(200, json={"instances": [{}, {}, {}]}),
     )
-    assert await _api().list_instances_count() == 4
+    assert await _api().list_instances_count() == 3
 
 
 @pytest.mark.asyncio
