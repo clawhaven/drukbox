@@ -6,10 +6,19 @@ import pytest
 import respx
 
 from providers.exoscale.api import ExoscaleAPI
-from providers.exoscale.exceptions import ExoscaleTransportError, ExoscaleVMNotFoundError
+from providers.exoscale.exceptions import (
+    ExoscaleProviderError,
+    ExoscaleTransportError,
+    ExoscaleVMNotFoundError,
+)
 
 ZONE = "ch-gva-2"
 BASE_URL = f"https://api-{ZONE}.exoscale.com/v2"
+
+UBUNTU_TEMPLATE_ID = "45e849e9-bee9-4a4a-b995-cae4e21a8c50"
+MEDIUM_TYPE_ID = "b6e9d1e4-3c65-4c2e-8b0a-2f0f1d9c4a11"
+LARGE_TYPE_ID = "350716c4-1770-4b9e-a4a1-7dd4e0a1cbcd"
+CREATED_INSTANCE_ID = "0f6e9c26-6f2f-4a4b-8f0a-4c3f7b1d2e3c"
 
 
 def _api() -> ExoscaleAPI:
@@ -20,6 +29,39 @@ def _api() -> ExoscaleAPI:
         default_image="Linux Ubuntu 24.04 LTS 64-bit",
         instance_type="standard.medium",
         disk_gb=50,
+    )
+
+
+def _mock_resolver_lists(respx_mock) -> None:
+    respx_mock.get("/template").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "templates": [
+                    {
+                        "id": UBUNTU_TEMPLATE_ID,
+                        "name": "Linux Ubuntu 24.04 LTS 64-bit",
+                        "created-at": "2025-04-01T09:00:00Z",
+                        "visibility": "public",
+                    },
+                ],
+            },
+        ),
+    )
+    _mock_instance_type_list(respx_mock)
+
+
+def _mock_instance_type_list(respx_mock) -> None:
+    respx_mock.get("/instance-type").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "instance-types": [
+                    {"id": MEDIUM_TYPE_ID, "family": "standard", "size": "medium"},
+                    {"id": LARGE_TYPE_ID, "family": "standard", "size": "large"},
+                ],
+            },
+        ),
     )
 
 
@@ -65,8 +107,9 @@ async def test_ensure_ssh_key_reuses_existing(respx_mock):
 @pytest.mark.asyncio
 @respx.mock(base_url=BASE_URL)
 async def test_create_instance_posts_body_and_returns_id(respx_mock):
+    _mock_resolver_lists(respx_mock)
     route = respx_mock.post("/instance").mock(
-        return_value=httpx.Response(202, json={"reference": {"id": "i-12345"}}),
+        return_value=httpx.Response(200, json={"reference": {"id": CREATED_INSTANCE_ID}}),
     )
 
     instance_id = await _api().create_instance(
@@ -77,13 +120,15 @@ async def test_create_instance_posts_body_and_returns_id(respx_mock):
         labels={"managed-by": "drukbox"},
     )
 
-    assert instance_id == "i-12345"
+    assert instance_id == CREATED_INSTANCE_ID
     body = json.loads(route.calls.last.request.read())
     assert body["name"] == "sb-test"
     assert body["disk-size"] == 50
-    assert body["template"] == {"name": "Linux Ubuntu 24.04 LTS 64-bit"}
-    assert body["instance-type"] == {"name": "standard.medium"}
-    assert body["zone"] == ZONE
+    # template-ref and instance-type-ref are {id}-only; the zone comes from the
+    # zonal API host, not the body.
+    assert body["template"] == {"id": UBUNTU_TEMPLATE_ID}
+    assert body["instance-type"] == {"id": MEDIUM_TYPE_ID}
+    assert "zone" not in body
     assert body["ssh-key"] == {"name": "drukbox-sb-test"}
     assert body["labels"] == {"managed-by": "drukbox"}
     assert base64.standard_b64decode(body["user-data"]).decode("utf-8") == "#!/bin/sh\necho hi"
@@ -92,8 +137,9 @@ async def test_create_instance_posts_body_and_returns_id(respx_mock):
 @pytest.mark.asyncio
 @respx.mock(base_url=BASE_URL)
 async def test_create_instance_prefers_explicit_instance_type(respx_mock):
+    _mock_resolver_lists(respx_mock)
     route = respx_mock.post("/instance").mock(
-        return_value=httpx.Response(202, json={"reference": {"id": "i-1"}}),
+        return_value=httpx.Response(200, json={"reference": {"id": CREATED_INSTANCE_ID}}),
     )
 
     await _api().create_instance(
@@ -106,14 +152,15 @@ async def test_create_instance_prefers_explicit_instance_type(respx_mock):
     )
 
     body = json.loads(route.calls.last.request.read())
-    assert body["instance-type"] == {"name": "standard.large"}
+    assert body["instance-type"] == {"id": LARGE_TYPE_ID}
 
 
 @pytest.mark.asyncio
 @respx.mock(base_url=BASE_URL)
 async def test_create_instance_prefers_explicit_disk_gb(respx_mock):
+    _mock_resolver_lists(respx_mock)
     route = respx_mock.post("/instance").mock(
-        return_value=httpx.Response(202, json={"reference": {"id": "i-1"}}),
+        return_value=httpx.Response(200, json={"reference": {"id": CREATED_INSTANCE_ID}}),
     )
 
     await _api().create_instance(
@@ -132,8 +179,9 @@ async def test_create_instance_prefers_explicit_disk_gb(respx_mock):
 @pytest.mark.asyncio
 @respx.mock(base_url=BASE_URL)
 async def test_create_instance_omits_user_data_when_empty(respx_mock):
+    _mock_resolver_lists(respx_mock)
     route = respx_mock.post("/instance").mock(
-        return_value=httpx.Response(202, json={"reference": {"id": "i-1"}}),
+        return_value=httpx.Response(200, json={"reference": {"id": CREATED_INSTANCE_ID}}),
     )
 
     await _api().create_instance(
@@ -146,6 +194,72 @@ async def test_create_instance_omits_user_data_when_empty(respx_mock):
 
     body = json.loads(route.calls.last.request.read())
     assert "user-data" not in body
+
+
+@pytest.mark.asyncio
+@respx.mock(base_url=BASE_URL)
+async def test_resolve_template_id_picks_newest_build_matching_name(respx_mock):
+    old_build_id = "9f2c8f74-2b7e-4f3a-b2a5-5d9f2f1e0c4d"
+    respx_mock.get("/template").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "templates": [
+                    {
+                        "id": old_build_id,
+                        "name": "Linux Ubuntu 24.04 LTS 64-bit",
+                        "created-at": "2024-11-05T08:00:00Z",
+                        "visibility": "public",
+                    },
+                    {
+                        "id": UBUNTU_TEMPLATE_ID,
+                        "name": "Linux Ubuntu 24.04 LTS 64-bit",
+                        "created-at": "2025-04-01T09:00:00Z",
+                        "visibility": "public",
+                    },
+                    {
+                        "id": "1c9e1e2d-4b6f-4a0e-9d3c-7e5b8a2f6d10",
+                        "name": "Linux Debian 12 (Bookworm) 64-bit",
+                        "created-at": "2025-06-01T09:00:00Z",
+                        "visibility": "public",
+                    },
+                ],
+            },
+        ),
+    )
+
+    template_id = await _api()._resolve_template_id("Linux Ubuntu 24.04 LTS 64-bit")
+
+    assert template_id == UBUNTU_TEMPLATE_ID
+
+
+@pytest.mark.asyncio
+@respx.mock(base_url=BASE_URL)
+async def test_resolve_template_id_raises_when_name_unknown(respx_mock):
+    respx_mock.get("/template").mock(
+        return_value=httpx.Response(200, json={"templates": []}),
+    )
+
+    with pytest.raises(ExoscaleProviderError, match="no Exoscale template named"):
+        await _api()._resolve_template_id("Linux Ubuntu 24.04 LTS 64-bit")
+
+
+@pytest.mark.asyncio
+@respx.mock(base_url=BASE_URL)
+async def test_resolve_instance_type_id_matches_family_and_size(respx_mock):
+    _mock_instance_type_list(respx_mock)
+
+    assert await _api()._resolve_instance_type_id("standard.medium") == MEDIUM_TYPE_ID
+    assert await _api()._resolve_instance_type_id("standard.large") == LARGE_TYPE_ID
+
+
+@pytest.mark.asyncio
+@respx.mock(base_url=BASE_URL)
+async def test_resolve_instance_type_id_raises_when_name_unknown(respx_mock):
+    _mock_instance_type_list(respx_mock)
+
+    with pytest.raises(ExoscaleProviderError, match="no Exoscale instance type named"):
+        await _api()._resolve_instance_type_id("standard.colossus")
 
 
 @pytest.mark.asyncio
@@ -259,15 +373,25 @@ async def test_authorization_header_matches_reference_fixture(respx_mock, monkey
         "signature=1GojVvs6vYrqytp/HhhjEmCKgOtSmUp2ObCJNfTizAI="
     )
     route = respx_mock.post("/instance").mock(
-        return_value=httpx.Response(202, json={"reference": {"id": "i-12345"}}),
+        return_value=httpx.Response(200, json={"reference": {"id": CREATED_INSTANCE_ID}}),
     )
 
-    await _api().create_instance(
-        name="sb-test",
-        image="Linux Ubuntu 24.04 LTS 64-bit",
-        ssh_key_name="drukbox-sb-test",
-        user_data="#!/bin/sh\necho hi",
-        labels={"managed-by": "drukbox"},
+    # Frozen signing fixture: the exact bytes the reference implementation
+    # signed to produce `expected`. Input to the HMAC oracle only — not a
+    # claim about the create-instance body shape.
+    await _api()._request(
+        "POST",
+        "/instance",
+        json={
+            "name": "sb-test",
+            "template": {"name": "Linux Ubuntu 24.04 LTS 64-bit"},
+            "instance-type": {"name": "standard.medium"},
+            "zone": ZONE,
+            "disk-size": 50,
+            "ssh-key": {"name": "drukbox-sb-test"},
+            "labels": {"managed-by": "drukbox"},
+            "user-data": base64.standard_b64encode(b"#!/bin/sh\necho hi").decode("utf-8"),
+        },
     )
 
     header = route.calls.last.request.headers["authorization"]
@@ -286,7 +410,7 @@ async def test_authorization_header_matches_reference_fixture_with_query_args(
         "expires=1700000000,signature=LdrDqX3RL8WKrHOSxqZ3ueR5PcwwEzjtwlOXWUThvUc="
     )
     route = respx_mock.get("/instance").mock(
-        return_value=httpx.Response(200, json={"instances": [], "total": 0}),
+        return_value=httpx.Response(200, json={"instances": []}),
     )
 
     await _api()._request("GET", "/instance", params={"zone": ZONE, "name": "sb-test"})

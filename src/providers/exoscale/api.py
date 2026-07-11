@@ -5,12 +5,13 @@ import hashlib
 import hmac
 import time
 from collections.abc import Generator
+from datetime import datetime
 from typing import Any, Self
 from urllib.parse import parse_qs
 
 import httpx
 
-from .exceptions import ExoscaleTransportError, ExoscaleVMNotFoundError
+from .exceptions import ExoscaleProviderError, ExoscaleTransportError, ExoscaleVMNotFoundError
 from .settings import ExoscaleSettings
 
 _RUN_TO_IP_TIMEOUT_SECONDS = 300
@@ -117,13 +118,16 @@ class ExoscaleAPI:
         labels: dict[str, str],
         instance_type: str | None = None,
         disk_gb: int | None = None,
-        zone: str | None = None,
     ) -> str:
+        # create-instance takes template-ref/instance-type-ref, which are
+        # {id}-only — names must be resolved first. The zone is selected by the
+        # zonal base_url; the body has no zone field.
         body: dict[str, Any] = {
             "name": name,
-            "template": {"name": image},
-            "instance-type": {"name": instance_type or self.instance_type},
-            "zone": zone or self.zone,
+            "template": {"id": await self._resolve_template_id(image)},
+            "instance-type": {
+                "id": await self._resolve_instance_type_id(instance_type or self.instance_type)
+            },
             "disk-size": disk_gb or self.disk_gb,
             "ssh-key": {"name": ssh_key_name},
             "labels": labels,
@@ -132,6 +136,24 @@ class ExoscaleAPI:
             body["user-data"] = base64.standard_b64encode(user_data.encode("utf-8")).decode("utf-8")
         response = await self._request("POST", "/instance", json=body)
         return str(response["reference"]["id"])
+
+    async def _resolve_template_id(self, name: str) -> str:
+        # Successive builds of the same template share a name; pick the newest
+        # created-at so provisioning tracks the latest published build.
+        response = await self._request("GET", "/template")
+        if matches := [t for t in response["templates"] if t.get("name") == name]:
+            newest = max(matches, key=lambda t: datetime.fromisoformat(t["created-at"]))
+            return str(newest["id"])
+        raise ExoscaleProviderError(f"no Exoscale template named {name!r}")
+
+    async def _resolve_instance_type_id(self, name: str) -> str:
+        # list-instance-types items carry no name field — "standard.medium"
+        # is "{family}.{size}".
+        response = await self._request("GET", "/instance-type")
+        for item in response["instance-types"]:
+            if f"{item.get('family')}.{item.get('size')}" == name:
+                return str(item["id"])
+        raise ExoscaleProviderError(f"no Exoscale instance type named {name!r}")
 
     async def wait_for_running_with_ip(self, instance_id: str) -> str:
         deadline = time.monotonic() + _RUN_TO_IP_TIMEOUT_SECONDS

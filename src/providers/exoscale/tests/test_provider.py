@@ -49,7 +49,6 @@ async def test_create_vm_mints_key_and_returns_public_ip_and_private_key():
     assert instance_kwargs["image"] == "Linux Ubuntu 24.04 LTS 64-bit"
     assert instance_kwargs["ssh_key_name"] == "drukbox-sb-test"
     assert instance_kwargs["labels"] == {"managed-by": "drukbox", "drukbox-host-name": "sb-test"}
-    assert instance_kwargs["zone"] == "ch-gva-2"
     assert "export FOO=bar" in instance_kwargs["user_data"]
 
     assert result.ssh_host == "198.51.100.7"

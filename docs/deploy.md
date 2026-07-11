@@ -215,6 +215,11 @@ Exoscale provider:
 | `EXOSCALE_BOOTSTRAP_SSH_TIMEOUT_SECONDS` | `120.0` | ssh-keyscan retry budget for a fresh instance. |
 | `EXOSCALE_SSH_USERNAME` | `ubuntu` | In-VM user callers SSH as. Exoscale Ubuntu templates default to `ubuntu`. |
 
+The API key's IAM role must allow the compute operations `list-templates` and
+`list-instance-types` in addition to the instance and SSH-key operations:
+instance creation resolves the configured template and instance-type names to
+IDs through those list calls.
+
 Docker provider:
 
 | Variable | Default | Purpose |

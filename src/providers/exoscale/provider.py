@@ -74,7 +74,6 @@ class ExoscaleProvider(VMProvider):
                 ssh_key_name=key_name,
                 user_data=user_data,
                 labels=labels,
-                zone=self.settings.zone,
             )
         except ExoscaleProviderError as exc:
             await self.api.delete_ssh_key(key_name)
