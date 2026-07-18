@@ -13,7 +13,7 @@ class DockerSettings(BaseSettings):
     )
 
     default_image: str = Field(
-        default="ghcr.io/clawhaven/drukbox/sandbox:latest",
+        default="ghcr.io/czpython/drukbox/sandbox:latest",
         description="Sandbox image with sshd; auto-pulled. Build images/local/ to customize.",
     )
     ssh_username: str = Field(

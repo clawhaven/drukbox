@@ -7,11 +7,11 @@ behind these defaults, read [Security](security.md).
 ## Image and processes
 
 One image serves everything — API, maintenance commands, migrations.
-It's published to `ghcr.io/clawhaven/drukbox` on every release; build
-`docker build -t ghcr.io/clawhaven/drukbox .` only to run a local change.
+It's published to `ghcr.io/czpython/drukbox` on every release; build
+`docker build -t ghcr.io/czpython/drukbox .` only to run a local change.
 
 ```bash
-IMAGE=ghcr.io/clawhaven/drukbox:latest
+IMAGE=ghcr.io/czpython/drukbox:latest
 
 # API (port 8780; /healthz for liveness probes)
 docker run --rm -p 8780:8780 --env-file drukbox.env "$IMAGE"
@@ -62,7 +62,7 @@ export TAILSCALE_ENABLED=false
 ```
 
 The sandbox image (`DOCKER_DEFAULT_IMAGE`, default
-`ghcr.io/clawhaven/drukbox/sandbox:latest`) is pulled on first provision.
+`ghcr.io/czpython/drukbox/sandbox:latest`) is pulled on first provision.
 To customize it, build [images/local/](../images/local/) and point
 `DOCKER_DEFAULT_IMAGE` at your tag.
 
@@ -224,7 +224,7 @@ Docker provider:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DOCKER_DEFAULT_IMAGE` | `ghcr.io/clawhaven/drukbox/sandbox:latest` | Sandbox image with sshd; auto-pulled. Build `images/local/Dockerfile` to customize. |
+| `DOCKER_DEFAULT_IMAGE` | `ghcr.io/czpython/drukbox/sandbox:latest` | Sandbox image with sshd; auto-pulled. Build `images/local/Dockerfile` to customize. |
 | `DOCKER_SSH_USERNAME` | `root` | In-container user callers SSH as. |
 | `DOCKER_BOOTSTRAP_SSH_TIMEOUT_SECONDS` | `30.0` | ssh-keyscan retry budget for a fresh container. |
 
