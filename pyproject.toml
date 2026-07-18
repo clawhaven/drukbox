@@ -67,9 +67,9 @@ aws = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/clawhaven/drukbox"
-Repository = "https://github.com/clawhaven/drukbox"
-Issues = "https://github.com/clawhaven/drukbox/issues"
+Homepage = "https://github.com/czpython/drukbox"
+Repository = "https://github.com/czpython/drukbox"
+Issues = "https://github.com/czpython/drukbox/issues"
 
 [dependency-groups]
 dev = [

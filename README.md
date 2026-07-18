@@ -25,7 +25,7 @@ No cloud account needed — run Drukbox from source on the host, so the
 local containers:
 
 ```bash
-git clone https://github.com/clawhaven/drukbox.git
+git clone https://github.com/czpython/drukbox.git
 cd drukbox && uv sync
 make dev
 ```
